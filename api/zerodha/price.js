@@ -1,14 +1,10 @@
-export default async function handler(req, res) {
-  const { symbol } = req.query;
+export default function handler(req, res) {
+  const symbol = req.query.symbol || "Unknown";
 
-  if (!symbol) {
-    return res.status(400).json({ error: 'Symbol is required' });
-  }
-
-  // Simulated response for testing
-  res.status(200).json({
+  return res.status(200).json({
     symbol,
-    price: 2742.55, // dummy value
-    message: "Price fetched successfully"
+    price: 2742.55,
+    status: "Success",
+    note: "This is a test response"
   });
 }
