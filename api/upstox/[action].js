@@ -9,9 +9,7 @@ export default async function handler(req, res) {
   const clientSecret = process.env.UPSTOX_SECRET_ID;
   const redirectUri = process.env.UPSTOX_REDIRECT_URI;
 
-  // ============================
   // 1. Login URL (OAuth)
-  // ============================
   if (action === "login") {
     const authUrl = `https://api.upstox.com/v2/login/authorization/dialog?client_id=${clientId}&redirect_uri=${encodeURIComponent(
       redirectUri
@@ -19,9 +17,7 @@ export default async function handler(req, res) {
     return res.redirect(authUrl);
   }
 
-  // ============================
   // 2. Callback Handler
-  // ============================
   if (action === "callback") {
     const { code } = req.query;
 
@@ -53,9 +49,7 @@ export default async function handler(req, res) {
     }
   }
 
-  // ============================
   // 3. Status Check
-  // ============================
   if (action === "status") {
     if (accessToken) {
       return res.status(200).json({ connected: true, token: accessToken });
@@ -64,9 +58,7 @@ export default async function handler(req, res) {
     }
   }
 
-  // ============================
   // 4. Price Fetch
-  // ============================
   if (action === "price") {
     if (!accessToken) {
       return res.status(401).json({ error: "Upstox not authenticated" });
@@ -102,8 +94,6 @@ export default async function handler(req, res) {
     }
   }
 
-  // ============================
-  // 5. Default fallback
-  // ============================
+  // 5. Fallback
   return res.status(404).json({ error: "Invalid action" });
 }

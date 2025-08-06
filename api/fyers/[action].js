@@ -1,105 +1,45 @@
-// api/fyers/[action].js
+// -------------------------
+// FYERS LOGIN (v3)
+// -------------------------
+if (broker === "fyers" && action === "login") {
+  const redirectUri = process.env.FYERS_REDIRECT_URI; // e.g. https://fyers-redirect-9ubf.vercel.app/api/fyers/callback
+  const authUrl = `https://api.fyers.in/api/v3/generate-authcode?client_id=${process.env.FYERS_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&state=xyz123`;
 
-let accessToken = null;
+  return res.redirect(authUrl);
+}
 
-export default async function handler(req, res) {
-  const { action } = req.query;
+// -------------------------
+// FYERS CALLBACK (v3)
+// -------------------------
+if (broker === "fyers" && action === "callback") {
+  const { code } = req.query;
 
-  // ========================
-  // Handle Login (redirect)
-  // ========================
-  if (action === "login") {
-    const redirectUri = process.env.FYERS_REDIRECT_URI;
-    const clientId = process.env.FYERS_CLIENT_ID;
-    const state = "xyz123";
-
-    const authUrl = `https://api.fyers.in/api/v2/generate-authcode?client_id=${clientId}&redirect_uri=${encodeURIComponent(
-      redirectUri
-    )}&response_type=code&state=${state}`;
-
-    return res.redirect(authUrl);
+  if (!code) {
+    return res.status(400).json({ success: false, error: "Missing code parameter" });
   }
 
-  // ========================
-  // Handle Callback (exchange code for token)
-  // ========================
-  if (action === "callback") {
-    const { code } = req.query;
-
-    const response = await fetch("https://api.fyers.in/api/v2/accessToken", {
+  try {
+    const tokenResponse = await fetch("https://api.fyers.in/api/v3/token", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        client_id: process.env.FYERS_CLIENT_ID,
-        secret_key: process.env.FYERS_SECRET_ID,
         grant_type: "authorization_code",
+        appId: process.env.FYERS_CLIENT_ID,
         code: code,
+        secret_key: process.env.FYERS_SECRET_ID,
+        redirect_uri: process.env.FYERS_REDIRECT_URI
       }),
     });
 
-    const data = await response.json();
-    if (data.access_token) {
-      accessToken = data.access_token;
-      return res.status(200).json({ success: true, accessToken });
+    const tokenData = await tokenResponse.json();
+
+    if (tokenData.access_token) {
+      // TODO: Save token securely (DB, cache, etc.)
+      return res.status(200).json({ success: true, accessToken: tokenData.access_token });
     } else {
-      return res.status(500).json({ success: false, error: data });
+      return res.status(500).json({ success: false, error: tokenData });
     }
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
   }
-
-  // ========================
-  // Status: check if token is saved
-  // ========================
-  if (action === "status") {
-    if (accessToken) {
-      return res.status(200).json({ connected: true, token: accessToken });
-    } else {
-      return res.status(200).json({ connected: false });
-    }
-  }
-
-  // ========================
-  // Price fetch (Fyers v3)
-  // ========================
-  if (action === "price") {
-    return await (async () => {
-      if (!accessToken) {
-        return res.status(401).json({ error: "Fyers not authenticated" });
-      }
-
-      const { symbol } = req.query;
-      if (!symbol) {
-        return res.status(400).json({ error: "Missing symbol" });
-      }
-
-      try {
-        const response = await fetch("https://api.fyers.in/v3/quotes", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ symbols: [symbol] }),
-        });
-
-        const data = await response.json();
-        const price = data?.d?.[0]?.v?.lp;
-
-        if (price) {
-          return res.status(200).json({ symbol, price, message: "Price fetched successfully" });
-        } else {
-          return res.status(404).json({ error: "Price not found", raw: data });
-        }
-      } catch (err) {
-        console.error("Error fetching price:", err);
-        return res.status(500).json({ error: "Failed to fetch price", message: err.message });
-      }
-    })();
-  }
-
-  // ========================
-  // Invalid action
-  // ========================
-  return res.status(404).json({ error: "Invalid action" });
 }
