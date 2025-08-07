@@ -1,9 +1,7 @@
 export default async function handler(req, res) {
   const { code, state } = req.query;
 
-  // ------------------------
   // FYERS LOGIN
-  // ------------------------
   if (req.url.includes("/login")) {
     const { client_id, secret, redirect_uri, appIdHash } = req.query;
 
@@ -14,7 +12,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // Encode all required values into the 'state' parameter
     const stateObj = {
       appIdHash,
       client_id,
@@ -33,9 +30,7 @@ export default async function handler(req, res) {
     return res.redirect(authUrl);
   }
 
-  // ------------------------
   // FYERS CALLBACK
-  // ------------------------
   if (req.url.includes("/callback")) {
     if (!code || !state) {
       return res.status(400).json({
@@ -59,26 +54,23 @@ export default async function handler(req, res) {
     if (!client_id || !secret || !redirect_uri) {
       return res.status(400).json({
         success: false,
-        error: "Missing client_id, secret, or redirect_uri in state",
+        error: "Missing values in state",
       });
     }
 
     try {
-      const tokenResponse = await fetch(
-        "https://api-t1.fyers.in/api/v3/validate-authcode",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            grant_type: "authorization_code",
-            appIdHash,
-            code,
-            client_id,
-            secret,
-            redirect_uri,
-          }),
-        }
-      );
+      const tokenResponse = await fetch("https://api-t1.fyers.in/api/v3/validate-authcode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          grant_type: "authorization_code",
+          appIdHash,
+          code,
+          client_id,
+          secret,
+          redirect_uri,
+        }),
+      });
 
       const tokenData = await tokenResponse.json();
 
@@ -102,9 +94,7 @@ export default async function handler(req, res) {
     }
   }
 
-  // ------------------------
-  // INVALID ROUTE
-  // ------------------------
+  // Invalid route
   return res.status(400).json({
     success: false,
     error: "Invalid route: use /login or /callback",
