@@ -1,14 +1,16 @@
 export default async function handler(req, res) {
   const { code, state } = req.query;
 
-  // FYERS LOGIN
+  // FYERS LOGIN (Redirects to Fyers login page)
   if (req.url.includes("/login")) {
-    const { client_id, secret, redirect_uri, appIdHash } = req.query;
+    const { client_id, secret, appIdHash } = req.query;
 
-    if (!client_id || !secret || !redirect_uri || !appIdHash) {
+    const redirect_uri = "https://trade.fyers.in/api-login/redirect-uri/index.html"; // ✅ fixed as per Fyers docs
+
+    if (!client_id || !secret || !appIdHash) {
       return res.status(400).json({
         success: false,
-        error: "Missing client_id, secret, redirect_uri, or appIdHash",
+        error: "Missing client_id, secret, or appIdHash",
       });
     }
 
@@ -21,8 +23,8 @@ export default async function handler(req, res) {
 
     const stateStr = encodeURIComponent(JSON.stringify(stateObj));
 
-    // ✅ FIXED: Correct login UI endpoint for auth code generation
-    const authUrl = `https://api.fyers.in/api/v3/generate-authcode` +
+    // ✅ Fyers-approved login endpoint
+    const authUrl = `https://api-t1.fyers.in/api/v3/generate-authcode` +
       `?client_id=${encodeURIComponent(client_id)}` +
       `&redirect_uri=${encodeURIComponent(redirect_uri)}` +
       `&response_type=code` +
@@ -31,35 +33,20 @@ export default async function handler(req, res) {
     return res.redirect(authUrl);
   }
 
-  // FYERS CALLBACK
-  if (req.url.includes("/callback")) {
-    if (!code || !state) {
-      return res.status(400).json({
-        success: false,
-        error: "Missing code or state",
-      });
-    }
-
-    let parsedState;
+  // FYERS TOKEN EXCHANGE (Manually triggered from app using code)
+  if (req.method === "POST" && req.url.includes("/callback")) {
     try {
-      parsedState = JSON.parse(decodeURIComponent(state));
-    } catch {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid state format",
-      });
-    }
+      const { code, appIdHash, client_id, secret } = req.body;
 
-    const { appIdHash, client_id, secret, redirect_uri } = parsedState;
+      const redirect_uri = "https://trade.fyers.in/api-login/redirect-uri/index.html"; // ✅ must match
 
-    if (!client_id || !secret || !redirect_uri) {
-      return res.status(400).json({
-        success: false,
-        error: "Missing values in state",
-      });
-    }
+      if (!code || !appIdHash || !client_id || !secret) {
+        return res.status(400).json({
+          success: false,
+          error: "Missing required fields in POST body",
+        });
+      }
 
-    try {
       const tokenResponse = await fetch("https://api-t1.fyers.in/api/v3/validate-authcode", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -98,6 +85,6 @@ export default async function handler(req, res) {
   // Invalid route
   return res.status(400).json({
     success: false,
-    error: "Invalid route: use /login or /callback",
+    error: "Invalid route: use /login (GET) or /callback (POST)",
   });
 }
