@@ -1,6 +1,6 @@
 const REDIRECT_URI = "https://fyers-redirect-9ubf.vercel.app/api/fyers/callback";
 
-// Only load Mongo if you want to use DB (optional)
+// Optional MongoDB config
 let tokenCollection = null;
 const MONGO_URI = process.env.MONGODB_URI;
 const DB_NAME = "fyersdb";
@@ -78,7 +78,7 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Token exchange failed", detail: data });
     }
 
-    // Optional: Save to DB if Mongo is configured
+    // Save to DB if configured
     if (tokenCollection) {
       await tokenCollection.updateOne(
         { client_id },
@@ -94,11 +94,28 @@ export default async function handler(req, res) {
       );
     }
 
-    // Redirect back to the app with the token
-    return res.redirect(`fyerscallback://auth?token=${data.access_token}`);
+    const redirectUrl = `fyerscallback://auth?token=${data.access_token}`;
+
+    // 👉 For Android app redirection
+    if (req.headers["user-agent"]?.includes("Android") || req.headers["user-agent"]?.includes("okhttp")) {
+      return res.redirect(redirectUrl);
+    }
+
+    // 👉 For browser testing/debug
+    return res.send(`
+      <html>
+        <head><title>Fyers Login</title></head>
+        <body style="font-family: sans-serif; text-align: center; margin-top: 5em;">
+          <h2>✅ Fyers Login Successful</h2>
+          <p>Access Token:</p>
+          <code>${data.access_token}</code>
+          <p style="margin-top: 2em;"><a href="${redirectUrl}">Return to App</a></p>
+        </body>
+      </html>
+    `);
   }
 
-  // === FETCH HISTORICAL DATA ===
+  // === HISTORICAL DATA ===
   if (path.includes("/historical") && method === "GET") {
     const { symbol, resolution, from, to, access_token } = req.query;
 
