@@ -5,21 +5,24 @@ export default async function handler(req, res) {
   const secret = process.env.FYERS_SECRET_ID;
   const appIdHash = process.env.FYERS_APP_ID_HASH;
 
-  console.log("ENV:", client_id, secret, appIdHash);  // ✅ LOG HERE
+  const isCallback = req.url.includes("/callback");  // ✅ FIXED
+
+  console.log("ENV:", client_id, secret, appIdHash);
 
   if (!client_id || !secret || !appIdHash) {
     console.error("Missing env vars");
     return res.status(500).json({ error: "Missing environment variables" });
   }
-  // LOGIN ENDPOINT: Generate Fyers Auth URL
-  if (req.method === 'GET') {
+
+  // === LOGIN ENDPOINT ===
+  if (req.method === 'GET' && !isCallback) {
     const { state } = req.query;
 
     if (!state) {
       return res.status(400).json({ success: false, error: "Missing state" });
     }
 
-    const authUrl = `https://api-t1.fyers.in/api/v3/generate-authcode?client_id=${appId}&redirect_uri=https://fyers-redirect-9ubf.vercel.app/api/fyers/callback&response_type=code&state=${encodeURIComponent(state)}`;
+    const authUrl = `https://api-t1.fyers.in/api/v3/generate-authcode?client_id=${client_id}&redirect_uri=https://fyers-redirect-9ubf.vercel.app/api/fyers/callback&response_type=code&state=${encodeURIComponent(state)}`;
 
     return res.status(200).json({
       success: true,
@@ -27,7 +30,7 @@ export default async function handler(req, res) {
     });
   }
 
-  // CALLBACK ENDPOINT: Handle both GET (browser) and POST (mobile) OAuth code exchange
+  // === CALLBACK ENDPOINT ===
   if (isCallback) {
     let codeFromClient;
 
@@ -87,6 +90,6 @@ export default async function handler(req, res) {
     }
   }
 
-  // Fallback for unmatched routes
+  // === Fallback Route ===
   return res.status(404).json({ success: false, error: "Invalid route" });
 }
