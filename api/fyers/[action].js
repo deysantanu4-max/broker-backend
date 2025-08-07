@@ -1,9 +1,22 @@
-// pages/api/fyers/[action].js
-
 const REDIRECT_URI = "https://fyers-redirect-9ubf.vercel.app/api/fyers/callback";
 
-// TEMPORARY in-memory store (not persistent!)
-let tokenStore = {};
+// Only load Mongo if you want to use DB (optional)
+let tokenCollection = null;
+const MONGO_URI = process.env.MONGODB_URI;
+const DB_NAME = "fyersdb";
+const COLLECTION = "tokens";
+let client = null;
+
+async function getDb() {
+  if (!MONGO_URI) return null;
+  if (!client) {
+    const { MongoClient } = await import("mongodb");
+    client = new MongoClient(MONGO_URI);
+    await client.connect();
+  }
+  const db = client.db(DB_NAME);
+  return db.collection(COLLECTION);
+}
 
 export default async function handler(req, res) {
   const path = req.url || "";
@@ -14,7 +27,11 @@ export default async function handler(req, res) {
   const appIdHash = process.env.FYERS_APP_ID_HASH;
 
   if (!client_id || !secret || !appIdHash) {
-    return res.status(500).json({ error: "Missing environment variables" });
+    return res.status(500).json({ error: "Missing Fyers environment variables" });
+  }
+
+  if (MONGO_URI && !tokenCollection) {
+    tokenCollection = await getDb();
   }
 
   // === LOGIN ===
@@ -22,10 +39,11 @@ export default async function handler(req, res) {
     const stateObj = { client_id, secret, appIdHash };
     const state = encodeURIComponent(JSON.stringify(stateObj));
 
-    const authUrl = `https://api-t1.fyers.in/api/v3/generate-authcode?client_id=${client_id}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&state=${state}`;
+    const authUrl = `https://api-t1.fyers.in/api/v3/generate-authcode?client_id=${client_id}&redirect_uri=${encodeURIComponent(
+      REDIRECT_URI
+    )}&response_type=code&state=${state}`;
 
-    return res.redirect(`fyerscallback://auth?token=${data.access_token}`);
-
+    return res.redirect(authUrl);
   }
 
   // === CALLBACK ===
@@ -60,34 +78,39 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Token exchange failed", detail: data });
     }
 
-    // Store token temporarily in memory
-    tokenStore[client_id] = {
-      access_token: data.access_token,
-      refresh_token: data.refresh_token,
-      updatedAt: new Date(),
-    };
+    // Optional: Save to DB if Mongo is configured
+    if (tokenCollection) {
+      await tokenCollection.updateOne(
+        { client_id },
+        {
+          $set: {
+            client_id,
+            access_token: data.access_token,
+            refresh_token: data.refresh_token,
+            updatedAt: new Date(),
+          },
+        },
+        { upsert: true }
+      );
+    }
 
-    return res.status(200).json({ success: true, accessToken: data.access_token });
+    // Redirect back to the app with the token
+    return res.redirect(`fyerscallback://auth?token=${data.access_token}`);
   }
 
   // === FETCH HISTORICAL DATA ===
   if (path.includes("/historical") && method === "GET") {
-    const { symbol, resolution, from, to } = req.query;
+    const { symbol, resolution, from, to, access_token } = req.query;
 
-    if (!symbol || !resolution || !from || !to) {
+    if (!symbol || !resolution || !from || !to || !access_token) {
       return res.status(400).json({ error: "Missing query parameters" });
-    }
-
-    const tokenDoc = tokenStore[client_id];
-    if (!tokenDoc?.access_token) {
-      return res.status(401).json({ error: "Access token not found. Please login first." });
     }
 
     const dataResponse = await fetch(
       `https://api.fyers.in/data-rest/v2/history/?symbol=${symbol}&resolution=${resolution}&date_format=1&range_from=${from}&range_to=${to}&cont_flag=1`,
       {
         headers: {
-          Authorization: `Bearer ${tokenDoc.access_token}`,
+          Authorization: `Bearer ${access_token}`,
         },
       }
     );
@@ -98,7 +121,9 @@ export default async function handler(req, res) {
 
   // === LOGOUT ===
   if (path.includes("/logout") && method === "POST") {
-    delete tokenStore[client_id];
+    if (tokenCollection) {
+      await tokenCollection.deleteOne({ client_id });
+    }
     return res.status(200).json({ success: true, message: "Logged out" });
   }
 
