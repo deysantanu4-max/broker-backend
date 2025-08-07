@@ -1,11 +1,11 @@
 export default async function handler(req, res) {
-  const { code, state } = req.query;
+  const isLogin = req.url.includes("/login");
+  const isCallback = req.url.includes("/callback");
 
   // === FYERS LOGIN STEP ===
-  if (req.url.includes("/login")) {
+  if (isLogin) {
     const { client_id, secret, appIdHash } = req.query;
 
-    // ⚠️ This must exactly match what you saved in Fyers dashboard!
     const redirect_uri = "https://fyers-redirect-9ubf.vercel.app/api/fyers/callback";
 
     if (!client_id || !secret || !appIdHash) {
@@ -15,12 +15,7 @@ export default async function handler(req, res) {
       });
     }
 
-    const stateObj = {
-      appIdHash,
-      client_id,
-      secret
-    };
-
+    const stateObj = { appIdHash, client_id, secret };
     const stateStr = encodeURIComponent(JSON.stringify(stateObj));
 
     const authUrl = `https://api-t1.fyers.in/api/v3/generate-authcode` +
@@ -32,32 +27,42 @@ export default async function handler(req, res) {
     return res.redirect(authUrl);
   }
 
-  // === FYERS TOKEN STEP ===
-  if (req.method === "GET" && req.url.includes("/callback")) {
-    if (!code || !state) {
-      return res.status(400).json({
-        success: false,
-        error: "Missing code or state",
-      });
-    }
+  // === FYERS CALLBACK TOKEN EXCHANGE ===
+  if (isCallback) {
+    let code, client_id, secret, appIdHash;
 
-    let parsedState;
-    try {
-      parsedState = JSON.parse(decodeURIComponent(state));
-    } catch {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid state format",
-      });
-    }
+    // Support both GET with state or POST with raw body
+    if (req.method === "GET") {
+      const { state, code: queryCode } = req.query;
+      if (!state || !queryCode) {
+        return res.status(400).json({ success: false, error: "Missing code or state" });
+      }
 
-    const { appIdHash, client_id, secret } = parsedState;
+      try {
+        const parsedState = JSON.parse(decodeURIComponent(state));
+        client_id = parsedState.client_id;
+        secret = parsedState.secret;
+        appIdHash = parsedState.appIdHash;
+        code = queryCode;
+      } catch {
+        return res.status(400).json({ success: false, error: "Invalid state format" });
+      }
 
-    if (!client_id || !secret || !appIdHash) {
-      return res.status(400).json({
-        success: false,
-        error: "Missing values in state",
-      });
+    } else if (req.method === "POST") {
+      try {
+        const body = await req.json();
+        ({ code, client_id, secret, appIdHash } = body);
+
+        if (!code || !client_id || !secret || !appIdHash) {
+          return res.status(400).json({ success: false, error: "Missing values in body" });
+        }
+
+      } catch {
+        return res.status(400).json({ success: false, error: "Invalid JSON in request body" });
+      }
+
+    } else {
+      return res.status(405).json({ success: false, error: "Method not allowed" });
     }
 
     try {
@@ -77,13 +82,10 @@ export default async function handler(req, res) {
         return res.status(200).json({
           success: true,
           accessToken: tokenData.access_token,
-          refreshToken: tokenData.refresh_token
+          refreshToken: tokenData.refresh_token || null
         });
       } else {
-        return res.status(500).json({
-          success: false,
-          error: tokenData,
-        });
+        return res.status(500).json({ success: false, error: tokenData });
       }
 
     } catch (err) {
@@ -97,6 +99,6 @@ export default async function handler(req, res) {
   // === Invalid fallback ===
   return res.status(400).json({
     success: false,
-    error: "Invalid route: use /login (GET) or /callback (GET)"
+    error: "Invalid route: use /login (GET) or /callback (GET/POST)"
   });
 }
