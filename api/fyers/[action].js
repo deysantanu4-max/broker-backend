@@ -1,11 +1,11 @@
 export default async function handler(req, res) {
-  const { client_id, redirect_uri, appIdHash, code, state } = req.query;
+  const { client_id, secret, redirect_uri, appIdHash, code, state } = req.query;
 
   if (req.url.includes("/login")) {
-    if (!client_id || !redirect_uri || !appIdHash) {
+    if (!client_id || !secret || !redirect_uri || !appIdHash) {
       return res.status(400).json({
         success: false,
-        error: "Missing client_id, redirect_uri, or appIdHash",
+        error: "Missing client_id, secret, redirect_uri, or appIdHash",
       });
     }
 
@@ -19,10 +19,10 @@ export default async function handler(req, res) {
   }
 
   if (req.url.includes("/callback")) {
-    if (!code || !state) {
+    if (!code || !state || !client_id || !secret || !redirect_uri) {
       return res.status(400).json({
         success: false,
-        error: "Missing code or state",
+        error: "Missing required query params for token exchange",
       });
     }
 
@@ -36,6 +36,9 @@ export default async function handler(req, res) {
             grant_type: "authorization_code",
             appIdHash: state,
             code,
+            client_id,
+            secret,
+            redirect_uri,
           }),
         }
       );
@@ -57,7 +60,7 @@ export default async function handler(req, res) {
     } catch (err) {
       return res.status(500).json({
         success: false,
-        error: err.message || "Unexpected error",
+        error: err.message || "Unexpected error during token exchange",
       });
     }
   }
