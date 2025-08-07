@@ -1,8 +1,8 @@
 export default async function handler(req, res) {
   const method = req.method;
 
-  const client_id = process.env.FYERS_APP_ID;
-  const secret = process.env.FYERS_SECRET;
+  const client_id = process.env.FYERS_CLIENT_ID;
+  const secret = process.env.FYERS_SECRET_ID;
   const appIdHash = process.env.FYERS_APP_ID_HASH;
 
   console.log("ENV:", client_id, secret, appIdHash);  // ✅ LOG HERE
