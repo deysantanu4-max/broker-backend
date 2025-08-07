@@ -51,7 +51,7 @@ export default async function handler(req, res) {
         const accessToken = data.access_token;
 
         // ✅ Redirect to Android app via deep link intent
-        const androidRedirect = `fyerscallback://auth?access_token=${accessToken}`;
+        const androidRedirect = `intent://callback?access_token=${accessToken}#Intent;scheme=aistocksignal;package=com.aistocksignal;end;`;
 
         return res.redirect(androidRedirect);
       } else {
