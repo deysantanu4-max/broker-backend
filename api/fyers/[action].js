@@ -1,59 +1,59 @@
 export default async function handler(req, res) {
-export default async function handler(req, res) {
-  const isLogin = req.url.includes("/login");
-  const isCallback = req.url.includes("/callback");
+  const { url } = req;
+  const isLogin = url?.includes("login");
+  const isCallback = url?.includes("callback");
 
-  // Redirect URI - must match the one registered in Fyers app settings
-  const REDIRECT_URI = "https://fyers-redirect-9ubf.vercel.app/api/fyers/callback";
-
-  // Load credentials from environment variables
-  const client_id = process.env.FYERS_APP_ID;
+  const appId = process.env.FYERS_APP_ID;
   const secret = process.env.FYERS_SECRET;
   const appIdHash = process.env.FYERS_APP_ID_HASH;
 
-  // 🔍 Add this log for debugging
-  console.log("ENV:", client_id, secret, appIdHash);
-
-  if (!client_id || !secret || !appIdHash) {
+  if (!appId || !secret || !appIdHash) {
     return res.status(500).json({
       success: false,
-      error: "Missing environment variables. Please check Vercel settings.",
+      error: "Environment variables missing (FYERS_APP_ID, FYERS_SECRET, FYERS_APP_ID_HASH)",
     });
   }
 
-  // === STEP 1: Redirect user to Fyers login ===
+  // LOGIN ENDPOINT: Generate Fyers Auth URL
   if (isLogin) {
-    const stateObj = { client_id, secret, appIdHash };
-    const state = encodeURIComponent(JSON.stringify(stateObj));
+    const { state } = req.query;
 
-    const authUrl =
-      `https://api-t1.fyers.in/api/v3/generate-authcode` +
-      `?client_id=${encodeURIComponent(client_id)}` +
-      `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
-      `&response_type=code` +
-      `&state=${state}`;
+    if (!state) {
+      return res.status(400).json({ success: false, error: "Missing state" });
+    }
 
-    return res.redirect(authUrl);
+    const authUrl = `https://api-t1.fyers.in/api/v3/generate-authcode?client_id=${appId}&redirect_uri=https://fyers-redirect-9ubf.vercel.app/api/fyers/callback&response_type=code&state=${encodeURIComponent(state)}`;
+
+    return res.status(200).json({
+      success: true,
+      authUrl,
+    });
   }
 
-  // === STEP 2: Handle Fyers callback and exchange code ===
+  // CALLBACK ENDPOINT: Handle both GET (browser) and POST (mobile) OAuth code exchange
   if (isCallback) {
-    let code;
+    let codeFromClient;
 
     if (req.method === "GET") {
-      const { code: queryCode, state } = req.query;
-
-      if (!queryCode || !state) {
+      const { code, state } = req.query;
+      if (!code || !state) {
         return res.status(400).json({ success: false, error: "Missing code or state" });
       }
+      codeFromClient = code;
 
-      try {
-        // Optional: parse state, even though we already have credentials from env
-        const parsed = JSON.parse(decodeURIComponent(state));
-        code = queryCode;
-      } catch (e) {
-        return res.status(400).json({ success: false, error: "Invalid state format" });
+    } else if (req.method === "POST") {
+      const body = req.body;
+
+      if (!body || !body.code || !body.appIdHash) {
+        return res.status(400).json({ success: false, error: "Missing POST body parameters" });
       }
+
+      if (body.appIdHash !== appIdHash) {
+        return res.status(403).json({ success: false, error: "Invalid appIdHash" });
+      }
+
+      codeFromClient = body.code;
+
     } else {
       return res.status(405).json({ success: false, error: "Method not allowed" });
     }
@@ -61,11 +61,13 @@ export default async function handler(req, res) {
     try {
       const response = await fetch("https://api-t1.fyers.in/api/v3/validate-authcode", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({
           grant_type: "authorization_code",
           appIdHash,
-          code,
+          code: codeFromClient,
         }),
       });
 
@@ -78,10 +80,7 @@ export default async function handler(req, res) {
           refreshToken: data.refresh_token || null,
         });
       } else {
-        return res.status(500).json({
-          success: false,
-          error: data,
-        });
+        return res.status(500).json({ success: false, error: data });
       }
     } catch (err) {
       return res.status(500).json({
@@ -91,8 +90,6 @@ export default async function handler(req, res) {
     }
   }
 
-  return res.status(400).json({
-    success: false,
-    error: "Invalid route",
-  });
+  // Fallback for unmatched routes
+  return res.status(404).json({ success: false, error: "Invalid route" });
 }
