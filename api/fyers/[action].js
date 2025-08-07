@@ -24,7 +24,7 @@ export default async function handler(req, res) {
 
     const authUrl = `https://api-t1.fyers.in/api/v3/generate-authcode?client_id=${client_id}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&state=${state}`;
 
-    return res.redirect(authUrl);
+    return res.redirect(`https://your-app.com/dashboard?token=${data.access_token}`);
   }
 
   // === CALLBACK ===
