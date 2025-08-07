@@ -1,19 +1,16 @@
 export default async function handler(req, res) {
-  const { url } = req;
-  const isLogin = url?.includes("login");
-  const isCallback = url?.includes("callback");
+  const method = req.method;
 
-  const appId = process.env.FYERS_APP_ID;
+  const client_id = process.env.FYERS_APP_ID;
   const secret = process.env.FYERS_SECRET;
   const appIdHash = process.env.FYERS_APP_ID_HASH;
 
-  if (!appId || !secret || !appIdHash) {
-    return res.status(500).json({
-      success: false,
-      error: "Environment variables missing (FYERS_APP_ID, FYERS_SECRET, FYERS_APP_ID_HASH)",
-    });
-  }
+  console.log("ENV:", client_id, secret, appIdHash);  // ✅ LOG HERE
 
+  if (!client_id || !secret || !appIdHash) {
+    console.error("Missing env vars");
+    return res.status(500).json({ error: "Missing environment variables" });
+  }
   // LOGIN ENDPOINT: Generate Fyers Auth URL
   if (isLogin) {
     const { state } = req.query;
