@@ -1,4 +1,5 @@
 export default async function handler(req, res) {
+export default async function handler(req, res) {
   const isLogin = req.url.includes("/login");
   const isCallback = req.url.includes("/callback");
 
@@ -9,6 +10,9 @@ export default async function handler(req, res) {
   const client_id = process.env.FYERS_APP_ID;
   const secret = process.env.FYERS_SECRET;
   const appIdHash = process.env.FYERS_APP_ID_HASH;
+
+  // 🔍 Add this log for debugging
+  console.log("ENV:", client_id, secret, appIdHash);
 
   if (!client_id || !secret || !appIdHash) {
     return res.status(500).json({
