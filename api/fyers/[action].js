@@ -80,6 +80,9 @@ export default async function handler(req, res) {
 
       if (data.access_token) {
         console.log("✅ Access Token Received");
+	if (method === "GET") {
+    	    return res.redirect(`fyerscallback://auth?access_token=${data.access_token}`);
+  	    }
         return res.status(200).json({
           success: true,
           accessToken: data.access_token,
