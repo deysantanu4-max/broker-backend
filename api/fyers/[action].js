@@ -1,16 +1,9 @@
 // pages/api/fyers/[action].js
-import { MongoClient } from "mongodb";
 
 const REDIRECT_URI = "https://fyers-redirect-9ubf.vercel.app/api/fyers/callback";
-const MONGO_URI = process.env.MONGODB_URI;
-const DB_NAME = "fyersdb";
-const COLLECTION = "tokens";
 
-async function getDb() {
-  const client = new MongoClient(MONGO_URI);
-  await client.connect();
-  return client.db(DB_NAME).collection(COLLECTION);
-}
+// TEMPORARY in-memory store (not persistent!)
+let tokenStore = {};
 
 export default async function handler(req, res) {
   const path = req.url || "";
@@ -20,11 +13,9 @@ export default async function handler(req, res) {
   const secret = process.env.FYERS_SECRET_ID;
   const appIdHash = process.env.FYERS_APP_ID_HASH;
 
-  if (!client_id || !secret || !appIdHash || !MONGO_URI) {
+  if (!client_id || !secret || !appIdHash) {
     return res.status(500).json({ error: "Missing environment variables" });
   }
-
-  const tokenCollection = await getDb();
 
   // === LOGIN ===
   if (path.includes("/login") && method === "GET") {
@@ -61,25 +52,19 @@ export default async function handler(req, res) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ grant_type: "authorization_code", appIdHash, code }),
     });
+
     const data = await response.json();
 
     if (!data.access_token) {
       return res.status(500).json({ error: "Token exchange failed", detail: data });
     }
 
-    // Save to DB
-    await tokenCollection.updateOne(
-      { client_id },
-      {
-        $set: {
-          client_id,
-          access_token: data.access_token,
-          refresh_token: data.refresh_token,
-          updatedAt: new Date(),
-        },
-      },
-      { upsert: true }
-    );
+    // Store token temporarily in memory
+    tokenStore[client_id] = {
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+      updatedAt: new Date(),
+    };
 
     return res.status(200).json({ success: true, accessToken: data.access_token });
   }
@@ -92,9 +77,9 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing query parameters" });
     }
 
-    const tokenDoc = await tokenCollection.findOne({ client_id });
+    const tokenDoc = tokenStore[client_id];
     if (!tokenDoc?.access_token) {
-      return res.status(401).json({ error: "Access token not found" });
+      return res.status(401).json({ error: "Access token not found. Please login first." });
     }
 
     const dataResponse = await fetch(
@@ -112,7 +97,7 @@ export default async function handler(req, res) {
 
   // === LOGOUT ===
   if (path.includes("/logout") && method === "POST") {
-    await tokenCollection.deleteOne({ client_id });
+    delete tokenStore[client_id];
     return res.status(200).json({ success: true, message: "Logged out" });
   }
 
