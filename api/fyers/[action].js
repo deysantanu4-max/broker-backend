@@ -21,7 +21,8 @@ export default async function handler(req, res) {
 
     const stateStr = encodeURIComponent(JSON.stringify(stateObj));
 
-    const authUrl = `https://api-t1.fyers.in/api/v3/generate-authcode` +
+    // ✅ FIXED: Correct login UI endpoint for auth code generation
+    const authUrl = `https://api.fyers.in/api/v3/generate-authcode` +
       `?client_id=${encodeURIComponent(client_id)}` +
       `&redirect_uri=${encodeURIComponent(redirect_uri)}` +
       `&response_type=code` +
