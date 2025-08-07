@@ -12,7 +12,7 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "Missing environment variables" });
   }
   // LOGIN ENDPOINT: Generate Fyers Auth URL
-  if (isLogin) {
+  if (req.method === 'GET') {
     const { state } = req.query;
 
     if (!state) {
