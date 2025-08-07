@@ -2,11 +2,11 @@ export default async function handler(req, res) {
   const isLogin = req.url.includes("/login");
   const isCallback = req.url.includes("/callback");
 
+  const REDIRECT_URI = "https://fyers-redirect-9ubf.vercel.app/api/fyers/callback";
+
   // === FYERS LOGIN STEP ===
   if (isLogin) {
     const { client_id, secret, appIdHash } = req.query;
-
-    const redirect_uri = "https://fyers-redirect-9ubf.vercel.app/api/fyers/callback";
 
     if (!client_id || !secret || !appIdHash) {
       return res.status(400).json({
@@ -15,39 +15,47 @@ export default async function handler(req, res) {
       });
     }
 
-    const stateObj = { appIdHash, client_id, secret };
-    const stateStr = encodeURIComponent(JSON.stringify(stateObj));
+    const stateObj = { client_id, secret, appIdHash };
+    const state = encodeURIComponent(JSON.stringify(stateObj));
 
-    const authUrl = `https://api-t1.fyers.in/api/v3/generate-authcode` +
+    const authUrl =
+      `https://api-t1.fyers.in/api/v3/generate-authcode` +
       `?client_id=${encodeURIComponent(client_id)}` +
-      `&redirect_uri=${encodeURIComponent(redirect_uri)}` +
+      `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
       `&response_type=code` +
-      `&state=${stateStr}`;
+      `&state=${state}`;
+
+    console.log("🔐 Redirecting to Fyers login:", authUrl);
 
     return res.redirect(authUrl);
   }
 
   // === FYERS CALLBACK TOKEN EXCHANGE ===
   if (isCallback) {
+    console.log("🔁 Incoming callback hit");
+    console.log("Request method:", req.method);
+    console.log("Query:", req.query);
+
     let code, client_id, secret, appIdHash;
 
-    // Support both GET with state or POST with raw body
     if (req.method === "GET") {
-      const { state, code: queryCode } = req.query;
-      if (!state || !queryCode) {
+      const { code: queryCode, state } = req.query;
+
+      if (!queryCode || !state) {
         return res.status(400).json({ success: false, error: "Missing code or state" });
       }
 
       try {
-        const parsedState = JSON.parse(decodeURIComponent(state));
-        client_id = parsedState.client_id;
-        secret = parsedState.secret;
-        appIdHash = parsedState.appIdHash;
+        const parsed = JSON.parse(decodeURIComponent(state));
+        client_id = parsed.client_id;
+        secret = parsed.secret;
+        appIdHash = parsed.appIdHash;
         code = queryCode;
-      } catch {
-        return res.status(400).json({ success: false, error: "Invalid state format" });
+        console.log("✅ Extracted from GET state:", { client_id, secret, appIdHash, code });
+      } catch (e) {
+        console.error("❌ Error parsing state:", e);
+        return res.status(400).json({ success: false, error: "Invalid state" });
       }
-
     } else if (req.method === "POST") {
       try {
         const body = await req.json();
@@ -57,48 +65,58 @@ export default async function handler(req, res) {
           return res.status(400).json({ success: false, error: "Missing values in body" });
         }
 
-      } catch {
-        return res.status(400).json({ success: false, error: "Invalid JSON in request body" });
+        console.log("✅ Extracted from POST body:", { code, client_id, secret, appIdHash });
+      } catch (e) {
+        console.error("❌ Invalid JSON body:", e);
+        return res.status(400).json({ success: false, error: "Invalid JSON body" });
       }
-
     } else {
       return res.status(405).json({ success: false, error: "Method not allowed" });
     }
 
     try {
-      const tokenRes = await fetch("https://api-t1.fyers.in/api/v3/validate-authcode", {
+      const payload = {
+        grant_type: "authorization_code",
+        appIdHash,
+        code
+      };
+
+      console.log("📤 Sending to Fyers /validate-authcode:", payload);
+
+      const response = await fetch("https://api-t1.fyers.in/api/v3/validate-authcode", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          grant_type: "authorization_code",
-          appIdHash,
-          code
-        })
+        body: JSON.stringify(payload),
       });
 
-      const tokenData = await tokenRes.json();
+      const data = await response.json();
 
-      if (tokenData.access_token) {
+      console.log("📥 Fyers response:", data);
+
+      if (data.access_token) {
         return res.status(200).json({
           success: true,
-          accessToken: tokenData.access_token,
-          refreshToken: tokenData.refresh_token || null
+          accessToken: data.access_token,
+          refreshToken: data.refresh_token || null
         });
       } else {
-        return res.status(500).json({ success: false, error: tokenData });
+        return res.status(500).json({
+          success: false,
+          error: data,
+        });
       }
-
     } catch (err) {
+      console.error("❌ Token exchange failed:", err);
       return res.status(500).json({
         success: false,
-        error: err.message || "Token request failed"
+        error: err.message || "Token exchange failed",
       });
     }
   }
 
-  // === Invalid fallback ===
+  // === Invalid Route Fallback ===
   return res.status(400).json({
     success: false,
-    error: "Invalid route: use /login (GET) or /callback (GET/POST)"
+    error: "Invalid route",
   });
 }
