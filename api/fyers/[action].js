@@ -1,6 +1,5 @@
 const REDIRECT_URI = "https://fyers-redirect-9ubf.vercel.app/api/fyers/callback";
 
-// Optional MongoDB config
 let tokenCollection = null;
 const MONGO_URI = process.env.MONGODB_URI;
 const DB_NAME = "fyersdb";
@@ -21,12 +20,12 @@ async function getDb() {
 export default async function handler(req, res) {
   const path = req.url || "";
   const method = req.method;
-
   const client_id = process.env.FYERS_CLIENT_ID;
   const secret = process.env.FYERS_SECRET_ID;
   const appIdHash = process.env.FYERS_APP_ID_HASH;
 
   if (!client_id || !secret || !appIdHash) {
+    console.error("❌ Missing Fyers environment variables");
     return res.status(500).json({ error: "Missing Fyers environment variables" });
   }
 
@@ -38,27 +37,33 @@ export default async function handler(req, res) {
   if (path.includes("/login") && method === "GET") {
     const stateObj = { client_id, secret, appIdHash };
     const state = encodeURIComponent(JSON.stringify(stateObj));
-
     const authUrl = `https://api-t1.fyers.in/api/v3/generate-authcode?client_id=${client_id}&redirect_uri=${encodeURIComponent(
       REDIRECT_URI
     )}&response_type=code&state=${state}`;
 
+    console.log("🔐 Redirecting to Fyers login...");
     return res.redirect(authUrl);
   }
 
   // === CALLBACK ===
   if (path.includes("/callback")) {
+    console.log("📥 /callback hit");
+    console.log("🔗 Query:", req.query);
+    console.log("📱 User-Agent:", req.headers["user-agent"]);
+
     let code;
 
     if (method === "GET") {
       const { auth_code, state } = req.query;
       if (!auth_code || !state) {
+        console.error("❌ Missing auth_code or state");
         return res.status(400).json({ error: "Missing auth_code or state" });
       }
       code = auth_code;
     } else if (method === "POST") {
       const body = req.body;
       if (!body?.code || body.appIdHash !== appIdHash) {
+        console.error("❌ Invalid or missing code/appIdHash");
         return res.status(403).json({ error: "Invalid or missing code/appIdHash" });
       }
       code = body.code;
@@ -73,12 +78,14 @@ export default async function handler(req, res) {
     });
 
     const data = await response.json();
+    console.log("🎯 Fyers token exchange response:", data);
 
     if (!data.access_token) {
+      console.error("❌ Token exchange failed", data);
       return res.status(500).json({ error: "Token exchange failed", detail: data });
     }
 
-    // Save to DB if configured
+    // Save to MongoDB (optional)
     if (tokenCollection) {
       await tokenCollection.updateOne(
         { client_id },
@@ -92,16 +99,17 @@ export default async function handler(req, res) {
         },
         { upsert: true }
       );
+      console.log("✅ Access token saved to MongoDB");
     }
 
     const redirectUrl = `fyerscallback://auth?token=${data.access_token}`;
+    console.log("📲 Redirecting to app:", redirectUrl);
 
-    // 👉 For Android app redirection
     if (req.headers["user-agent"]?.includes("Android") || req.headers["user-agent"]?.includes("okhttp")) {
       return res.redirect(redirectUrl);
     }
 
-    // 👉 For browser testing/debug
+    // Show in browser for debugging
     return res.send(`
       <html>
         <head><title>Fyers Login</title></head>
@@ -133,6 +141,7 @@ export default async function handler(req, res) {
     );
 
     const historicalData = await dataResponse.json();
+    console.log("📈 Historical data fetched for:", symbol);
     return res.status(200).json(historicalData);
   }
 
@@ -141,6 +150,7 @@ export default async function handler(req, res) {
     if (tokenCollection) {
       await tokenCollection.deleteOne({ client_id });
     }
+    console.log("👋 Logged out and token removed");
     return res.status(200).json({ success: true, message: "Logged out" });
   }
 
