@@ -51,7 +51,7 @@ export default async function handler(req, res) {
     console.log("🔗 Query:", req.query);
     console.log("📱 User-Agent:", req.headers["user-agent"]);
 
-    let code;
+    let code, parsedState;
 
     if (method === "GET") {
       const { auth_code, state } = req.query;
@@ -60,6 +60,12 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: "Missing auth_code or state" });
       }
       code = auth_code;
+      try {
+        parsedState = JSON.parse(state);
+      } catch (err) {
+        console.error("❌ Failed to parse state:", err);
+        return res.status(400).send("Invalid state format");
+      }
     } else if (method === "POST") {
       const body = req.body;
       if (!body?.code || body.appIdHash !== appIdHash) {
@@ -67,60 +73,66 @@ export default async function handler(req, res) {
         return res.status(403).json({ error: "Invalid or missing code/appIdHash" });
       }
       code = body.code;
+      parsedState = { appIdHash };
     } else {
       return res.status(405).json({ error: "Method not allowed" });
     }
 
-    const response = await fetch("https://api-t1.fyers.in/api/v3/validate-authcode", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ grant_type: "authorization_code", appIdHash, code }),
-    });
+    // Token Exchange
+    try {
+      const response = await fetch("https://api-t1.fyers.in/api/v3/validate-authcode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, appIdHash: parsedState.appIdHash })
+      });
 
-    const data = await response.json();
-    console.log("🎯 Fyers token exchange response:", data);
+      const data = await response.json();
+      console.log("🎯 Fyers token exchange response:", data);
 
-    if (!data.access_token) {
-      console.error("❌ Token exchange failed", data);
-      return res.status(500).json({ error: "Token exchange failed", detail: data });
-    }
+      if (!data.access_token) {
+        console.error("❌ Token exchange failed", data);
+        return res.status(500).json({ error: "Token exchange failed", detail: data });
+      }
 
-    // Save to MongoDB (optional)
-    if (tokenCollection) {
-      await tokenCollection.updateOne(
-        { client_id },
-        {
-          $set: {
-            client_id,
-            access_token: data.access_token,
-            refresh_token: data.refresh_token,
-            updatedAt: new Date(),
+      // Save to MongoDB (optional)
+      if (tokenCollection) {
+        await tokenCollection.updateOne(
+          { client_id },
+          {
+            $set: {
+              client_id,
+              access_token: data.access_token,
+              refresh_token: data.refresh_token,
+              updatedAt: new Date(),
+            },
           },
-        },
-        { upsert: true }
-      );
-      console.log("✅ Access token saved to MongoDB");
+          { upsert: true }
+        );
+        console.log("✅ Access token saved to MongoDB");
+      }
+
+      const redirectUrl = `fyerscallback://auth?token=${data.access_token}`;
+      console.log("📲 Redirecting to app:", redirectUrl);
+
+      if (req.headers["user-agent"]?.includes("Android") || req.headers["user-agent"]?.includes("okhttp")) {
+        return res.redirect(redirectUrl);
+      }
+
+      return res.send(`
+        <html>
+          <head><title>Fyers Login</title></head>
+          <body style="font-family: sans-serif; text-align: center; margin-top: 5em;">
+            <h2>✅ Fyers Login Successful</h2>
+            <p>Access Token:</p>
+            <code>${data.access_token}</code>
+            <p style="margin-top: 2em;"><a href="${redirectUrl}">Return to App</a></p>
+          </body>
+        </html>
+      `);
+    } catch (err) {
+      console.error("❌ Token exchange error:", err);
+      return res.status(500).send("Error exchanging token");
     }
-
-    const redirectUrl = `fyerscallback://auth?token=${data.access_token}`;
-    console.log("📲 Redirecting to app:", redirectUrl);
-
-    if (req.headers["user-agent"]?.includes("Android") || req.headers["user-agent"]?.includes("okhttp")) {
-      return res.redirect(redirectUrl);
-    }
-
-    // Show in browser for debugging
-    return res.send(`
-      <html>
-        <head><title>Fyers Login</title></head>
-        <body style="font-family: sans-serif; text-align: center; margin-top: 5em;">
-          <h2>✅ Fyers Login Successful</h2>
-          <p>Access Token:</p>
-          <code>${data.access_token}</code>
-          <p style="margin-top: 2em;"><a href="${redirectUrl}">Return to App</a></p>
-        </body>
-      </html>
-    `);
   }
 
   // === HISTORICAL DATA ===
@@ -131,18 +143,23 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing query parameters" });
     }
 
-    const dataResponse = await fetch(
-      `https://api.fyers.in/data-rest/v2/history/?symbol=${symbol}&resolution=${resolution}&date_format=1&range_from=${from}&range_to=${to}&cont_flag=1`,
-      {
-        headers: {
-          Authorization: `Bearer ${access_token}`,
-        },
-      }
-    );
+    try {
+      const dataResponse = await fetch(
+        `https://api.fyers.in/data-rest/v2/history/?symbol=${symbol}&resolution=${resolution}&date_format=1&range_from=${from}&range_to=${to}&cont_flag=1`,
+        {
+          headers: {
+            Authorization: `Bearer ${access_token}`,
+          },
+        }
+      );
 
-    const historicalData = await dataResponse.json();
-    console.log("📈 Historical data fetched for:", symbol);
-    return res.status(200).json(historicalData);
+      const historicalData = await dataResponse.json();
+      console.log("📈 Historical data fetched for:", symbol);
+      return res.status(200).json(historicalData);
+    } catch (err) {
+      console.error("❌ Error fetching historical data:", err);
+      return res.status(500).json({ error: "Failed to fetch historical data" });
+    }
   }
 
   // === LOGOUT ===
