@@ -20,15 +20,17 @@ export default async function handler(req, res) {
   }
 
   try {
+    // Prepare login payload, only add totp if it is non-empty
     const loginPayload = {
       clientcode,
       password,
       state: "some-state",
     };
-
     if (totp && totp.trim() !== "") {
       loginPayload.totp = totp;
     }
+
+    console.log("Sending login request to Angel API with payload:", loginPayload);
 
     const loginRes = await axios.post(
       `${ANGEL_API_BASE}/rest/auth/angelbroking/user/v1/loginByPassword`,
@@ -44,7 +46,7 @@ export default async function handler(req, res) {
           "X-MACAddress": "00:00:00:00:00:00",
           "X-PrivateKey": CLIENT_SECRET,
         },
-        validateStatus: () => true,
+        validateStatus: () => true, // always resolve, we handle errors ourselves
       }
     );
 
