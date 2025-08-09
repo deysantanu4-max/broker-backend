@@ -1,53 +1,89 @@
-// /api/angel/[action].js
+// actions.js
+import express from "express";
 import axios from "axios";
+import dotenv from "dotenv";
+import cors from "cors";
 
-export default async function handler(req, res) {
-  const { action } = req.query;
+dotenv.config();
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// Your Angel One API credentials
+const CLIENT_ID = process.env.ANGEL_CLIENT_ID;
+const CLIENT_SECRET = process.env.ANGEL_CLIENT_SECRET;
+const REDIRECT_URI = process.env.ANGEL_REDIRECT_URI;
+
+// Step 1: Start Login (redirect to Angel One)
+app.get("/login-angel", (req, res) => {
+  const loginUrl = `https://smartapi.angelbroking.com/publisher-login?api_key=${CLIENT_ID}`;
+  res.redirect(loginUrl);
+});
+
+// Step 2: Callback after user logs in
+app.get("/callback-angel", async (req, res) => {
+  const { request_token } = req.query;
+  if (!request_token) return res.status(400).send("No request token found");
 
   try {
-    if (action === "login") {
-      // Step 1: Redirect to Angel One login
-      const loginUrl = `https://smartapi.angelbroking.com/publisher-login?api_key=${process.env.ANGEL_API_KEY}`;
-      return res.redirect(loginUrl);
-    }
+    // Exchange request_token for access_token
+    const tokenRes = await axios.post("https://apiconnect.angelbroking.com/rest/auth/angelbroking/user/v1/loginByPassword", {
+      api_key: CLIENT_ID,
+      request_token: request_token,
+      client_secret: CLIENT_SECRET
+    });
 
-    if (action === "callback") {
-      // Step 2: Handle redirect after login
-      const { request_token } = req.query;
-      if (!request_token) {
-        return res.status(400).json({ error: "Missing request_token" });
-      }
+    const accessToken = tokenRes.data?.data?.jwtToken;
+    if (!accessToken) throw new Error("Token not received");
 
-      // Step 3: Exchange request_token for access_token
-      const tokenResponse = await axios.post(
-        "https://apiconnect.angelbroking.com/rest/auth/angelbroking/jwt/v1/generateToken",
-        {
-          apiKey: process.env.ANGEL_API_KEY,
-          clientCode: process.env.ANGEL_CLIENT_CODE,
-          jwtToken: request_token,
-        },
-        {
-          headers: {
-            "Content-Type": "application/json",
-            "X-ClientLocalIP": "127.0.0.1",
-            "X-ClientPublicIP": "127.0.0.1",
-            "X-MACAddress": "ab:cd:ef:gh:ij:kl",
-            "X-PrivateKey": process.env.ANGEL_API_KEY,
-          },
-        }
-      );
+    // TODO: Save accessToken to DB against the logged-in user ID
+    console.log("Access Token:", accessToken);
 
-      return res.status(200).json(tokenResponse.data);
-    }
-
-    if (action === "status") {
-      // Step 4: (Optional) Check API status
-      return res.status(200).json({ status: "Angel One API is working" });
-    }
-
-    return res.status(404).json({ error: "Invalid action" });
-  } catch (error) {
-    console.error("Angel API Error:", error);
-    res.status(500).json({ error: error.message });
+    // Redirect back to your Android app main activity
+    res.redirect(`aistocksignal://auth-success?token=${accessToken}`);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Error exchanging token");
   }
-}
+});
+
+// Step 3: Fetch Historical Data
+app.get("/historical/:symbol", async (req, res) => {
+  const { symbol } = req.params;
+  const accessToken = req.headers["authorization"];
+
+  if (!accessToken) return res.status(401).json({ error: "No access token" });
+
+  try {
+    const historyRes = await axios.post(
+      "https://apiconnect.angelbroking.com/rest/secure/angelbroking/historical/v1/getCandleData",
+      {
+        exchange: "NSE",
+        symboltoken: symbol, // You must map this from scrip to token
+        interval: "ONE_MINUTE",
+        fromdate: "2024-08-01 09:15",
+        todate: "2024-08-02 15:30"
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+          "X-UserType": "USER",
+          "X-SourceID": "WEB",
+          "X-ClientLocalIP": "127.0.0.1",
+          "X-ClientPublicIP": "127.0.0.1",
+          "X-MACAddress": "00:00:00:00:00:00",
+          Accept: "application/json"
+        }
+      }
+    );
+
+    res.json(historyRes.data);
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    res.status(500).json({ error: "Failed to fetch historical data" });
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Backend running on port ${PORT}`));
