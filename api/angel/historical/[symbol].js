@@ -5,7 +5,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const CLIENT_SECRET = process.env.ANGEL_CLIENT_SECRET;
+  const CLIENT_SECRET = process.env.ANGEL_API_KEY;
   const ANGEL_API_BASE = "https://apiconnect.angelone.in";
 
   const { symbol } = req.query;
