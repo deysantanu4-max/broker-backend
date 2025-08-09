@@ -1,26 +1,24 @@
 import axios from "axios";
 
-console.log("login-angel-password API loaded");
-
 export default async function handler(req, res) {
-  console.log("Handler invoked");
+  console.info("Handler invoked");
 
   if (req.method !== "POST") {
-    console.error(`Invalid method: ${req.method}`);
+    console.warn(`Invalid method: ${req.method}`);
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const CLIENT_SECRET = process.env.ANGEL_CLIENT_SECRET;
+  const API_KEY = process.env.ANGEL_API_KEY; // <-- Use API key here
   const ANGEL_API_BASE = "https://apiconnect.angelone.in";
 
-  console.log("Loaded CLIENT_SECRET:", CLIENT_SECRET ? "YES" : "NO");
+  console.info("Loaded API_KEY:", API_KEY ? "YES" : "NO");
 
   const { clientcode, password, totp } = req.body;
 
-  console.log("Received login request body:", req.body);
+  console.info("Received login request body:", req.body);
 
   if (!clientcode || !password) {
-    console.error("Missing clientcode or password");
+    console.warn("Missing clientcode or password");
     return res.status(400).json({ error: "Missing clientcode or password" });
   }
 
@@ -33,13 +31,11 @@ export default async function handler(req, res) {
 
     if (totp && totp.trim() !== "") {
       loginPayload.totp = totp;
-      console.log("TOTP included in payload");
-    } else {
-      console.log("No TOTP included in payload");
+      console.info("TOTP included in payload");
     }
 
     const clientIP = req.headers['x-forwarded-for'] || req.connection.remoteAddress || "127.0.0.1";
-    console.log("Using client IP:", clientIP);
+    console.info("Using client IP:", clientIP);
 
     const loginRes = await axios.post(
       `${ANGEL_API_BASE}/rest/auth/angelbroking/user/v1/loginByPassword`,
@@ -53,26 +49,26 @@ export default async function handler(req, res) {
           "X-ClientLocalIP": clientIP,
           "X-ClientPublicIP": clientIP,
           "X-MACAddress": "00:00:00:00:00:00",
-          "X-PrivateKey": CLIENT_SECRET,
+          "X-PrivateKey": API_KEY, // Correct API key here
         },
-        validateStatus: () => true,
+        validateStatus: () => true, // So we can log all responses
       }
     );
 
-    console.log("Angel API login response status:", loginRes.status);
-    console.log("Angel API login response data:", JSON.stringify(loginRes.data));
+    console.info("Angel API login response status:", loginRes.status);
+    console.info("Angel API login response data:", JSON.stringify(loginRes.data));
 
     const accessToken = loginRes.data?.data?.jwtToken;
 
     if (!accessToken) {
-      console.error("No access token received in response", loginRes.data);
+      console.warn("No access token received in response", loginRes.data);
       return res.status(401).json({ error: "Login failed: No access token received", details: loginRes.data });
     }
 
-    console.log("Login successful, sending token");
+    console.info("Login successful, sending token");
     return res.status(200).json({ accessToken });
   } catch (err) {
-    console.error("Caught error during login:", err.response?.data || err.message || err);
+    console.error("Login error:", err.response?.data || err.message || err);
     return res.status(500).json({ error: "Internal server error", details: err.message || err });
   }
 }
