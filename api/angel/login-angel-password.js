@@ -20,14 +20,19 @@ export default async function handler(req, res) {
   }
 
   try {
+    const loginPayload = {
+      clientcode,
+      password,
+      state: "some-state",
+    };
+
+    if (totp && totp.trim() !== "") {
+      loginPayload.totp = totp;
+    }
+
     const loginRes = await axios.post(
       `${ANGEL_API_BASE}/rest/auth/angelbroking/user/v1/loginByPassword`,
-      {
-        clientcode,
-        password,
-        totp,
-        state: "some-state",
-      },
+      loginPayload,
       {
         headers: {
           "Content-Type": "application/json",
@@ -39,7 +44,7 @@ export default async function handler(req, res) {
           "X-MACAddress": "00:00:00:00:00:00",
           "X-PrivateKey": CLIENT_SECRET,
         },
-        validateStatus: () => true, // prevent axios from throwing on non-200 status so we can log
+        validateStatus: () => true,
       }
     );
 
