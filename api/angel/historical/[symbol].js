@@ -1,8 +1,6 @@
 import axios from "axios";
 
 export default async function handler(req, res) {
-console.log("Symbol API hit"); 
-
   if (req.method !== "GET") {
     return res.status(405).json({ error: "Method not allowed" });
   }
