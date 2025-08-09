@@ -30,6 +30,8 @@ export default async function handler(req, res) {
       loginPayload.totp = totp;
     }
 
+    console.log("Sending login request to Angel API with payload:", loginPayload);
+
     const loginRes = await axios.post(
       `${ANGEL_API_BASE}/rest/auth/angelbroking/user/v1/loginByMpIN`,
       loginPayload,
