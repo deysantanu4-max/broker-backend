@@ -14,24 +14,30 @@ const CLIENT_ID = process.env.ANGEL_CLIENT_ID;
 const CLIENT_SECRET = process.env.ANGEL_CLIENT_SECRET;
 const REDIRECT_URI = process.env.ANGEL_REDIRECT_URI;
 
+// Angel One API base URL
+const ANGEL_API_BASE = "https://apiconnect.angelone.in";
+
 // Step 1: Start Login (redirect to Angel One)
 app.get("/login-angel", (req, res) => {
-  const loginUrl = `https://smartapi.angelbroking.com/publisher-login?api_key=${CLIENT_ID}`;
+  const loginUrl = `https://smartapi.angelone.in/publisher-login?api_key=${CLIENT_ID}`;
   res.redirect(loginUrl);
 });
 
 // Step 2: Callback after user logs in
-app.get("//api/angel/callback", async (req, res) => {
+app.get("/api/angel/callback", async (req, res) => {
   const { request_token } = req.query;
   if (!request_token) return res.status(400).send("No request token found");
 
   try {
     // Exchange request_token for access_token
-    const tokenRes = await axios.post("https://apiconnect.angelbroking.com/rest/auth/angelbroking/user/v1/loginByPassword", {
-      api_key: ANGEL_CLIENT_ID,
-      request_token: request_token,
-      client_secret: ANGEL_CLIENT_SECRET
-    });
+    const tokenRes = await axios.post(
+      `${ANGEL_API_BASE}/rest/auth/angelbroking/user/v1/loginByPassword`,
+      {
+        api_key: CLIENT_ID,
+        request_token: request_token,
+        client_secret: CLIENT_SECRET,
+      }
+    );
 
     const accessToken = tokenRes.data?.data?.jwtToken;
     if (!accessToken) throw new Error("Token not received");
@@ -42,7 +48,7 @@ app.get("//api/angel/callback", async (req, res) => {
     // Redirect back to your Android app main activity
     res.redirect(`aistocksignal://auth-success?token=${accessToken}`);
   } catch (err) {
-    console.error(err);
+    console.error(err.response?.data || err.message);
     res.status(500).send("Error exchanging token");
   }
 });
@@ -52,17 +58,18 @@ app.get("/historical/:symbol", async (req, res) => {
   const { symbol } = req.params;
   const accessToken = req.headers["authorization"];
 
-  if (!accessToken) return res.status(401).json({ error: "No access token" });
+  if (!accessToken)
+    return res.status(401).json({ error: "No access token provided" });
 
   try {
     const historyRes = await axios.post(
-      "https://apiconnect.angelbroking.com/rest/secure/angelbroking/historical/v1/getCandleData",
+      `${ANGEL_API_BASE}/rest/secure/angelbroking/historical/v1/getCandleData`,
       {
         exchange: "NSE",
         symboltoken: symbol, // You must map this from scrip to token
         interval: "ONE_MINUTE",
         fromdate: "2024-08-01 09:15",
-        todate: "2024-08-02 15:30"
+        todate: "2024-08-02 15:30",
       },
       {
         headers: {
@@ -73,8 +80,8 @@ app.get("/historical/:symbol", async (req, res) => {
           "X-ClientLocalIP": "127.0.0.1",
           "X-ClientPublicIP": "127.0.0.1",
           "X-MACAddress": "00:00:00:00:00:00",
-          Accept: "application/json"
-        }
+          Accept: "application/json",
+        },
       }
     );
 
