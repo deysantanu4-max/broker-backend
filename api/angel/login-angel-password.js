@@ -2,16 +2,17 @@ import axios from "axios";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
+    console.log(`Invalid method: ${req.method}`);
     return res.status(405).json({ error: "Method not allowed" });
   }
 
   const CLIENT_SECRET = process.env.ANGEL_CLIENT_SECRET;
   const ANGEL_API_BASE = "https://apiconnect.angelone.in";
 
-  const { clientcode, password, totp = "" } = req.body; // default totp to empty string
+  const { clientcode, password, totp } = req.body;
 
-  console.log("Login attempt with body:", { clientcode, password: password ? "****" : "", totp });
-  console.log("Using client IP:", req.headers['x-forwarded-for'] || "127.0.0.1");
+  console.log("Login attempt with body:", req.body);
+  console.log("Using client IP:", req.headers['x-forwarded-for'] || req.connection.remoteAddress || "127.0.0.1");
 
   if (!clientcode || !password) {
     console.log("Missing clientcode or password");
@@ -33,30 +34,29 @@ export default async function handler(req, res) {
           Accept: "application/json",
           "X-UserType": "USER",
           "X-SourceID": "WEB",
-          "X-ClientLocalIP": req.headers['x-forwarded-for'] || "127.0.0.1",
-          "X-ClientPublicIP": req.headers['x-forwarded-for'] || "127.0.0.1",
+          "X-ClientLocalIP": req.headers['x-forwarded-for'] || req.connection.remoteAddress || "127.0.0.1",
+          "X-ClientPublicIP": req.headers['x-forwarded-for'] || req.connection.remoteAddress || "127.0.0.1",
           "X-MACAddress": "00:00:00:00:00:00",
           "X-PrivateKey": CLIENT_SECRET,
         },
+        validateStatus: () => true, // prevent axios from throwing on non-200 status so we can log
       }
     );
 
     console.log("Angel API login response status:", loginRes.status);
-    if (loginRes.status !== 200) {
-      console.log("Unexpected login status:", loginRes.status);
-      return res.status(401).json({ error: "Login failed with status " + loginRes.status });
-    }
+    console.log("Angel API login response data:", JSON.stringify(loginRes.data));
 
     const accessToken = loginRes.data?.data?.jwtToken;
+
     if (!accessToken) {
       console.log("No access token received in response", loginRes.data);
-      return res.status(401).json({ error: "Login failed: No access token received" });
+      return res.status(401).json({ error: "Login failed: No access token received", details: loginRes.data });
     }
 
-    console.log("Login successful, sending access token");
+    console.log("Login successful, sending token");
     return res.status(200).json({ accessToken });
   } catch (err) {
     console.error("Login error:", err.response?.data || err.message || err);
-    return res.status(401).json({ error: "Invalid credentials or login error" });
+    return res.status(500).json({ error: "Internal server error", details: err.message || err });
   }
 }
