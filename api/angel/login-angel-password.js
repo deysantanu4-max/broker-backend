@@ -1,36 +1,45 @@
 import axios from "axios";
 
+console.log("login-angel-password API loaded");
+
 export default async function handler(req, res) {
+  console.log("Handler invoked");
+
   if (req.method !== "POST") {
-    console.log(`Invalid method: ${req.method}`);
+    console.error(`Invalid method: ${req.method}`);
     return res.status(405).json({ error: "Method not allowed" });
   }
 
   const CLIENT_SECRET = process.env.ANGEL_CLIENT_SECRET;
   const ANGEL_API_BASE = "https://apiconnect.angelone.in";
 
+  console.log("Loaded CLIENT_SECRET:", CLIENT_SECRET ? "YES" : "NO");
+
   const { clientcode, password, totp } = req.body;
 
-  console.log("Login attempt with body:", req.body);
-  console.log("Using client IP:", req.headers['x-forwarded-for'] || req.connection.remoteAddress || "127.0.0.1");
+  console.log("Received login request body:", req.body);
 
   if (!clientcode || !password) {
-    console.log("Missing clientcode or password");
+    console.error("Missing clientcode or password");
     return res.status(400).json({ error: "Missing clientcode or password" });
   }
 
   try {
-    // Prepare login payload, only add totp if it is non-empty
     const loginPayload = {
       clientcode,
       password,
       state: "some-state",
     };
+
     if (totp && totp.trim() !== "") {
       loginPayload.totp = totp;
+      console.log("TOTP included in payload");
+    } else {
+      console.log("No TOTP included in payload");
     }
 
-    console.log("Sending login request to Angel API with payload:", loginPayload);
+    const clientIP = req.headers['x-forwarded-for'] || req.connection.remoteAddress || "127.0.0.1";
+    console.log("Using client IP:", clientIP);
 
     const loginRes = await axios.post(
       `${ANGEL_API_BASE}/rest/auth/angelbroking/user/v1/loginByPassword`,
@@ -41,12 +50,12 @@ export default async function handler(req, res) {
           Accept: "application/json",
           "X-UserType": "USER",
           "X-SourceID": "WEB",
-          "X-ClientLocalIP": req.headers['x-forwarded-for'] || req.connection.remoteAddress || "127.0.0.1",
-          "X-ClientPublicIP": req.headers['x-forwarded-for'] || req.connection.remoteAddress || "127.0.0.1",
+          "X-ClientLocalIP": clientIP,
+          "X-ClientPublicIP": clientIP,
           "X-MACAddress": "00:00:00:00:00:00",
           "X-PrivateKey": CLIENT_SECRET,
         },
-        validateStatus: () => true, // always resolve, we handle errors ourselves
+        validateStatus: () => true,
       }
     );
 
@@ -56,14 +65,14 @@ export default async function handler(req, res) {
     const accessToken = loginRes.data?.data?.jwtToken;
 
     if (!accessToken) {
-      console.log("No access token received in response", loginRes.data);
+      console.error("No access token received in response", loginRes.data);
       return res.status(401).json({ error: "Login failed: No access token received", details: loginRes.data });
     }
 
     console.log("Login successful, sending token");
     return res.status(200).json({ accessToken });
   } catch (err) {
-    console.error("Login error:", err.response?.data || err.message || err);
+    console.error("Caught error during login:", err.response?.data || err.message || err);
     return res.status(500).json({ error: "Internal server error", details: err.message || err });
   }
 }
