@@ -1,6 +1,8 @@
 import axios from "axios";
 
 export default async function handler(req, res) {
+console.log("Symbol API hit"); 
+
   if (req.method !== "GET") {
     return res.status(405).json({ error: "Method not allowed" });
   }
@@ -9,8 +11,6 @@ export default async function handler(req, res) {
   const ANGEL_API_BASE = "https://apiconnect.angelone.in";
 
   const { symbol, exchange } = req.query; // exchange from app (NSE/BSE)
-
-  console.log(`Received from frontend -> symbol: "${symbol}", exchange: "${exchange}"`);
 
   if (!symbol) {
     console.log("Missing symbol parameter");
