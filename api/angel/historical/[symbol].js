@@ -10,6 +10,8 @@ export default async function handler(req, res) {
 
   const { symbol, exchange } = req.query; // exchange from app (NSE/BSE)
 
+  console.log(`Received from frontend -> symbol: "${symbol}", exchange: "${exchange}"`);
+
   if (!symbol) {
     console.log("Missing symbol parameter");
     return res.status(400).json({ error: "Missing symbol parameter" });
