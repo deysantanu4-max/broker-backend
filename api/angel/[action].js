@@ -21,7 +21,7 @@ app.get("/login-angel", (req, res) => {
 });
 
 // Step 2: Callback after user logs in
-app.get("/callback-angel", async (req, res) => {
+app.get("//api/angel/callback", async (req, res) => {
   const { request_token } = req.query;
   if (!request_token) return res.status(400).send("No request token found");
 
