@@ -1,4 +1,3 @@
-// actions.js
 import express from "express";
 import axios from "axios";
 import dotenv from "dotenv";
@@ -9,64 +8,86 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Your Angel One API credentials
+// Your Angel One API credentials (app-level, secure)
 const CLIENT_ID = process.env.ANGEL_CLIENT_ID;
 const CLIENT_SECRET = process.env.ANGEL_CLIENT_SECRET;
-const REDIRECT_URI = process.env.ANGEL_REDIRECT_URI;
 
-// Angel One API base URL
 const ANGEL_API_BASE = "https://apiconnect.angelone.in";
 
-// Step 1: Start Login (redirect to Angel One)
-app.get("/login-angel", (req, res) => {
-  const loginUrl = `https://smartapi.angelone.in/publisher-login?api_key=${CLIENT_ID}`;
-  res.redirect(loginUrl);
-});
+// Static symbol to token mapping (expand as needed)
+const symbolTokenMap = {
+  "RELIANCE": "3045",
+  "TCS": "2953",
+  "INFY": "408065",
+  "HDFCBANK": "341249",
+  "ICICIBANK": "1270529",
+  // Add more symbols and their tokens here
+};
 
-// Step 2: Callback after user logs in
-app.get("/api/angel/callback", async (req, res) => {
-  const { request_token } = req.query;
-  if (!request_token) return res.status(400).send("No request token found");
+// Login endpoint: users send their Angel One user credentials here
+app.post("/login-angel-password", async (req, res) => {
+  const { clientcode, password, totp } = req.body;
+
+  if (!clientcode || !password) {
+    return res.status(400).json({ error: "Missing clientcode or password" });
+  }
 
   try {
-    // Exchange request_token for access_token
-    const tokenRes = await axios.post(
+    const loginRes = await axios.post(
       `${ANGEL_API_BASE}/rest/auth/angelbroking/user/v1/loginByPassword`,
       {
-        api_key: CLIENT_ID,
-        request_token: request_token,
-        client_secret: CLIENT_SECRET,
+        clientcode,
+        password,
+        totp,
+        state: "some-state", // optional, you can generate & verify this for security
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          "X-UserType": "USER",
+          "X-SourceID": "WEB",
+          "X-ClientLocalIP": req.ip || "127.0.0.1",
+          "X-ClientPublicIP": req.ip || "127.0.0.1",
+          "X-MACAddress": "00:00:00:00:00:00",
+          "X-PrivateKey": CLIENT_SECRET, // your app secret here
+        },
       }
     );
 
-    const accessToken = tokenRes.data?.data?.jwtToken;
-    if (!accessToken) throw new Error("Token not received");
+    const accessToken = loginRes.data?.data?.jwtToken;
+    if (!accessToken) throw new Error("Login failed");
 
-    // TODO: Save accessToken to DB against the logged-in user ID
-    console.log("Access Token:", accessToken);
-
-    // Redirect back to your Android app main activity
-    res.redirect(`aistocksignal://auth-success?token=${accessToken}`);
+    res.json({ accessToken });
   } catch (err) {
     console.error(err.response?.data || err.message);
-    res.status(500).send("Error exchanging token");
+    res.status(401).json({ error: "Invalid credentials or login error" });
   }
 });
 
-// Step 3: Fetch Historical Data
+// Historical data fetch endpoint - requires access token from logged in user
 app.get("/historical/:symbol", async (req, res) => {
   const { symbol } = req.params;
-  const accessToken = req.headers["authorization"];
+  let accessToken = req.headers["authorization"];
 
-  if (!accessToken)
-    return res.status(401).json({ error: "No access token provided" });
+  if (!accessToken) return res.status(401).json({ error: "No access token provided" });
+
+  // Remove "Bearer " prefix if present
+  if (accessToken.toLowerCase().startsWith("bearer ")) {
+    accessToken = accessToken.slice(7);
+  }
+
+  const symbolToken = symbolTokenMap[symbol.toUpperCase()];
+  if (!symbolToken) {
+    return res.status(400).json({ error: "Invalid or unsupported symbol" });
+  }
 
   try {
     const historyRes = await axios.post(
       `${ANGEL_API_BASE}/rest/secure/angelbroking/historical/v1/getCandleData`,
       {
         exchange: "NSE",
-        symboltoken: symbol, // You must map this from scrip to token
+        symboltoken: symbolToken,
         interval: "ONE_MINUTE",
         fromdate: "2024-08-01 09:15",
         todate: "2024-08-02 15:30",
@@ -77,8 +98,8 @@ app.get("/historical/:symbol", async (req, res) => {
           "Content-Type": "application/json",
           "X-UserType": "USER",
           "X-SourceID": "WEB",
-          "X-ClientLocalIP": "127.0.0.1",
-          "X-ClientPublicIP": "127.0.0.1",
+          "X-ClientLocalIP": req.ip || "127.0.0.1",
+          "X-ClientPublicIP": req.ip || "127.0.0.1",
           "X-MACAddress": "00:00:00:00:00:00",
           Accept: "application/json",
         },
