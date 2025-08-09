@@ -26,9 +26,14 @@ const symbolTokenMap = {
 
 // Login endpoint: users send their Angel One user credentials here
 app.post("/login-angel-password", async (req, res) => {
+  console.log("Login attempt received with body:", req.body);
+  console.log("Loaded CLIENT_ID:", CLIENT_ID ? "YES" : "NO");
+  console.log("Loaded CLIENT_SECRET:", CLIENT_SECRET ? "YES" : "NO");
+
   const { clientcode, password, totp } = req.body;
 
   if (!clientcode || !password) {
+    console.log("Missing clientcode or password in request");
     return res.status(400).json({ error: "Missing clientcode or password" });
   }
 
@@ -39,7 +44,7 @@ app.post("/login-angel-password", async (req, res) => {
         clientcode,
         password,
         totp,
-        state: "some-state", // optional, you can generate & verify this for security
+        state: "some-state",
       },
       {
         headers: {
@@ -50,17 +55,18 @@ app.post("/login-angel-password", async (req, res) => {
           "X-ClientLocalIP": req.ip || "127.0.0.1",
           "X-ClientPublicIP": req.ip || "127.0.0.1",
           "X-MACAddress": "00:00:00:00:00:00",
-          "X-PrivateKey": CLIENT_SECRET, // your app secret here
+          "X-PrivateKey": CLIENT_SECRET,
         },
       }
     );
 
     const accessToken = loginRes.data?.data?.jwtToken;
-    if (!accessToken) throw new Error("Login failed");
+    if (!accessToken) throw new Error("Login failed: No access token received");
 
+    console.log("Login successful, sending token");
     res.json({ accessToken });
   } catch (err) {
-    console.error(err.response?.data || err.message);
+    console.error("Login error:", err.response?.data || err.message || err);
     res.status(401).json({ error: "Invalid credentials or login error" });
   }
 });
