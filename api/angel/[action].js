@@ -28,9 +28,9 @@ app.get("//api/angel/callback", async (req, res) => {
   try {
     // Exchange request_token for access_token
     const tokenRes = await axios.post("https://apiconnect.angelbroking.com/rest/auth/angelbroking/user/v1/loginByPassword", {
-      api_key: CLIENT_ID,
+      api_key: ANGEL_CLIENT_ID,
       request_token: request_token,
-      client_secret: CLIENT_SECRET
+      client_secret: ANGEL_CLIENT_SECRET
     });
 
     const accessToken = tokenRes.data?.data?.jwtToken;
