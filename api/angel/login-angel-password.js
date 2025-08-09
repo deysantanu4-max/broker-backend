@@ -1,6 +1,8 @@
 import axios from "axios";
 
 export default async function handler(req, res) {
+  console.log("Handler invoked");
+
   if (req.method !== "POST") {
     console.log(`Invalid method: ${req.method}`);
     return res.status(405).json({ error: "Method not allowed" });
@@ -23,14 +25,12 @@ export default async function handler(req, res) {
     const loginPayload = {
       clientcode,
       mpin,
-      state: "some-state",  // you can customize or generate this for security
+      state: "some-state",
     };
 
     if (totp && totp.trim() !== "") {
       loginPayload.totp = totp;
     }
-
-    console.log("Sending login request to Angel API with payload:", loginPayload);
 
     const loginRes = await axios.post(
       `${ANGEL_API_BASE}/rest/auth/angelbroking/user/v1/loginByMpIN`,
@@ -46,7 +46,7 @@ export default async function handler(req, res) {
           "X-MACAddress": "00:00:00:00:00:00",
           "X-PrivateKey": CLIENT_SECRET,
         },
-        validateStatus: () => true, // so axios doesn’t throw on non-200
+        validateStatus: () => true,
       }
     );
 
@@ -63,7 +63,16 @@ export default async function handler(req, res) {
     console.log("Login successful, sending token");
     return res.status(200).json({ accessToken });
   } catch (err) {
-    console.error("Login error:", err.response?.data || err.message || err);
-    return res.status(500).json({ error: "Internal server error", details: err.message || err });
+    if (err.response) {
+      console.error("Login error response data:", JSON.stringify(err.response.data));
+      console.error("Login error response status:", err.response.status);
+      console.error("Login error response headers:", JSON.stringify(err.response.headers));
+    } else if (err.request) {
+      console.error("Login error no response received, request was:", err.request);
+    } else {
+      console.error("Login error message:", err.message);
+    }
+    console.error("Full error object:", err);
+    return res.status(500).json({ error: "Internal server error", details: err.message || err.toString() });
   }
 }
