@@ -2,39 +2,36 @@ import axios from "axios";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+    return res.status(405).json({ error: "Method not allowed, use POST" });
   }
 
   const CLIENT_SECRET = process.env.ANGEL_API_KEY;
   const ANGEL_API_BASE = "https://apiconnect.angelone.in";
 
-  const { symbol, exchange } = req.body; // Read from POST JSON body
+  const { symbol, exchange } = req.body;
 
   if (!symbol) {
-    console.log("Missing symbol parameter");
-    return res.status(400).json({ error: "Missing symbol parameter" });
+    return res.status(400).json({ error: "Missing symbol in request body" });
   }
+
+  const ex = (exchange || "NSE").toUpperCase();
 
   let accessToken = req.headers["authorization"];
   if (!accessToken) {
-    console.log("No access token provided in headers");
     return res.status(401).json({ error: "No access token provided" });
   }
-
-  // Remove "Bearer " prefix if present
   if (accessToken.toLowerCase().startsWith("bearer ")) {
     accessToken = accessToken.slice(7);
   }
 
   try {
-    // 1️⃣ Get symbol token dynamically from Angel's search API
-    console.log(`Fetching token for symbol: ${symbol}`);
+    // 1️⃣ Get symbol token from Angel's search API
     const searchRes = await axios.get(
       `${ANGEL_API_BASE}/rest/secure/angelbroking/market/v1/searchBySymbol`,
       {
         params: {
-          exchange: exchange?.toUpperCase() || "NSE",
-          searchsymbol: symbol.toUpperCase()
+          exchange: ex,
+          searchsymbol: symbol.toUpperCase(),
         },
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -45,29 +42,30 @@ export default async function handler(req, res) {
           "X-ClientPublicIP": req.headers["x-forwarded-for"] || "127.0.0.1",
           "X-MACAddress": "00:00:00:00:00:00",
           Accept: "application/json",
-          "X-PrivateKey": CLIENT_SECRET
-        }
+          "X-PrivateKey": CLIENT_SECRET,
+        },
       }
     );
 
-    if (!searchRes.data || !searchRes.data.data || searchRes.data.data.length === 0) {
+    if (
+      !searchRes.data ||
+      !searchRes.data.data ||
+      searchRes.data.data.length === 0
+    ) {
       return res.status(404).json({ error: "Symbol not found" });
     }
 
     const symbolToken = searchRes.data.data[0].symbolToken;
-    console.log(`Token for ${symbol}: ${symbolToken}`);
 
-    // 2️⃣ Fetch historical data for that token
-    console.log(`Fetching historical data for ${symbol} (${symbolToken})`);
-
+    // 2️⃣ Fetch historical data using symbolToken
     const historyRes = await axios.post(
       `${ANGEL_API_BASE}/rest/secure/angelbroking/historical/v1/getCandleData`,
       {
-        exchange: exchange?.toUpperCase() || "NSE",
+        exchange: ex,
         symboltoken: symbolToken,
         interval: "ONE_MINUTE",
-        fromdate: "2024-08-01 09:15",
-        todate: "2024-08-02 15:30"
+        fromdate: "2024-08-01 09:15",  // You can make these dynamic or configurable
+        todate: "2024-08-02 15:30",
       },
       {
         headers: {
@@ -79,15 +77,14 @@ export default async function handler(req, res) {
           "X-ClientPublicIP": req.headers["x-forwarded-for"] || "127.0.0.1",
           "X-MACAddress": "00:00:00:00:00:00",
           Accept: "application/json",
-          "X-PrivateKey": CLIENT_SECRET
-        }
+          "X-PrivateKey": CLIENT_SECRET,
+        },
       }
     );
 
-    console.log("Historical data fetch successful");
-    res.status(200).json(historyRes.data);
-  } catch (err) {
-    console.error("Failed to fetch data:", err.response?.data || err.message || err);
-    res.status(500).json({ error: "Failed to fetch data" });
+    return res.status(200).json(historyRes.data);
+  } catch (error) {
+    console.error("Failed to fetch data:", error.response?.data || error.message || error);
+    return res.status(500).json({ error: "Failed to fetch data" });
   }
 }
