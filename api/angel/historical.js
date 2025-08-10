@@ -60,21 +60,24 @@ app.post('/api/angel/historical', async (req, res) => {
       await angelLogin();
     }
 
-    // ✅ Auto-append "-EQ" for NSE/BSE equity stocks
-    symbol = symbol.trim().toUpperCase();
-    exchange = exchange.trim().toUpperCase();
-    if ((exchange === "NSE" || exchange === "BSE") && !symbol.endsWith("-EQ")) {
-      symbol = `${symbol}-EQ`;
-    }
-
     const scripMaster = await loadScripMaster();
 
+    // Ensure -EQ is present
+    const symbolWithEq = symbol.toUpperCase().endsWith("-EQ") ? symbol.toUpperCase() : `${symbol.toUpperCase()}-EQ`;
+
+    // Map exchange for Angel format
+    const exchangeMap = {
+      "NSE": "NSE_EQ",
+      "BSE": "BSE_EQ"
+    };
+    const mappedExchange = exchangeMap[exchange.toUpperCase()] || exchange.toUpperCase();
+
     const instrument = scripMaster.find(
-      (inst) => inst.tradingsymbol === symbol && inst.exchange === exchange
+      (inst) => inst.tradingsymbol === symbolWithEq && inst.exchange === mappedExchange
     );
 
     if (!instrument) {
-      return res.status(404).json({ error: `Symbol '${symbol}' not found in scrip master` });
+      return res.status(404).json({ error: `Symbol '${symbolWithEq}' not found in scrip master` });
     }
 
     const symbolToken = instrument.token;
@@ -89,7 +92,7 @@ app.post('/api/angel/historical', async (req, res) => {
     const candleRes = await axios.post(
       'https://apiconnect.angelone.in/rest/secure/angelbroking/historical/v1/getCandleData',
       {
-        exchange: exchange,
+        exchange: mappedExchange,
         symboltoken: symbolToken,
         interval: 'ONE_MINUTE',
         fromdate: formatDate(fromDate),
