@@ -32,10 +32,13 @@ async function getSymbolToken(symbol, exchange) {
   }
 
   const found = instruments.find(
-    (inst) =>
-      inst.tradingsymbol.toUpperCase() === symbol.toUpperCase() &&
-      inst.exchange.toUpperCase() === exchange.toUpperCase()
-  );
+  (inst) =>
+    inst.tradingsymbol &&
+    inst.exchange &&
+    inst.tradingsymbol.toUpperCase() === symbol.toUpperCase() &&
+    inst.exchange.toUpperCase() === exchange.toUpperCase()
+);
+
 
   if (!found) {
     console.warn(`Symbol '${symbol}' with exchange '${exchange}' not found in scrip master`);
