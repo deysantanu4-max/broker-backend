@@ -41,16 +41,12 @@ export default async function handler(req, res) {
     console.log("Search params:", searchParams);
 
     const searchHeaders = {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-      "X-UserType": "USER",
-      "X-SourceID": "WEB",
-      "X-ClientLocalIP": req.headers["x-forwarded-for"] || "127.0.0.1",
-      "X-ClientPublicIP": req.headers["x-forwarded-for"] || "127.0.0.1",
-      "X-MACAddress": "00:00:00:00:00:00",
-      Accept: "application/json",
-      "X-PrivateKey": CLIENT_SECRET,
-    };
+  Authorization: `Bearer ${accessToken}`,
+  "X-PrivateKey": CLIENT_SECRET,
+  Accept: "application/json",
+  "Content-Type": "application/json",
+};
+
     console.log("Search headers:", JSON.stringify(searchHeaders));
 
     const searchRes = await axios.get(
