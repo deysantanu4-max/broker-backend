@@ -30,7 +30,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 1️⃣ Get symbol token from Angel's search API
+    // 1️⃣ Call searchBySymbol API to get symbolToken
     console.log(`Calling searchBySymbol API for symbol: ${symbol.toUpperCase()}, exchange: ${ex}`);
     const searchRes = await axios.get(
       `${ANGEL_API_BASE}/rest/secure/angelbroking/market/v1/searchBySymbol`,
@@ -55,11 +55,7 @@ export default async function handler(req, res) {
 
     console.log("searchBySymbol response data:", JSON.stringify(searchRes.data));
 
-    if (
-      !searchRes.data ||
-      !searchRes.data.data ||
-      searchRes.data.data.length === 0
-    ) {
+    if (!searchRes.data || !searchRes.data.data || searchRes.data.data.length === 0) {
       console.log("Symbol not found in search results");
       return res.status(404).json({ error: "Symbol not found" });
     }
@@ -67,17 +63,36 @@ export default async function handler(req, res) {
     const symbolToken = searchRes.data.data[0].symbolToken;
     console.log(`Found symbolToken: ${symbolToken}`);
 
-    // 2️⃣ Fetch historical data using symbolToken
-    console.log(`Fetching historical data for symbolToken: ${symbolToken}`);
+    // 2️⃣ Prepare dates in required format (yyyy-MM-dd HH:mm)
+    const now = new Date();
+    const toDate = now;
+    const fromDate = new Date(now.getTime() - 24 * 60 * 60 * 1000); // 24 hours ago
 
+    const pad = (n) => n.toString().padStart(2, "0");
+
+    const formatDate = (date) => {
+      return (
+        date.getFullYear() +
+        "-" +
+        pad(date.getMonth() + 1) +
+        "-" +
+        pad(date.getDate()) +
+        " " +
+        pad(date.getHours()) +
+        ":" +
+        pad(date.getMinutes())
+      );
+    };
+
+    // 3️⃣ Fetch historical data with POST body per API docs
     const historyRes = await axios.post(
       `${ANGEL_API_BASE}/rest/secure/angelbroking/historical/v1/getCandleData`,
       {
         exchange: ex,
         symboltoken: symbolToken,
         interval: "ONE_MINUTE",
-        fromdate: "2024-08-01 09:15",  // Adjust these dates as needed
-        todate: "2024-08-02 15:30",
+        fromdate: formatDate(fromDate),
+        todate: formatDate(toDate),
       },
       {
         headers: {
