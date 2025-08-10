@@ -1,127 +1,130 @@
-// historical.js
-const { SmartAPI } = require('smartapi-javascript');
-const axios = require('axios');
+import { SmartAPI } from "smartapi-javascript";
+import axios from "axios";
 
-// Load your credentials from environment variables
-const API_KEY = process.env.ANGEL_API_KEY;
-const CLIENT_ID = process.env.ANGEL_CLIENT_ID;
-const PASSWORD = process.env.ANGEL_PASSWORD;
+const smart_api = new SmartAPI({
+  api_key: process.env.ANGEL_API_KEY,
+});
 
-if (!API_KEY || !CLIENT_ID || !PASSWORD) {
-  console.error("Please set ANGEL_API_KEY, ANGEL_CLIENT_ID and ANGEL_PASSWORD in env variables.");
-  process.exit(1);
-}
+let scripMasterCache = null;
 
-// Initialize SmartAPI instance
-const smartApi = new SmartAPI({ api_key: API_KEY });
-
-let cachedScripMaster = null;
-
-// Fetch and cache scrip master JSON
-async function getScripMaster() {
-  if (cachedScripMaster) {
-    console.log("Using cached scrip master");
-    return cachedScripMaster;
+async function fetchScripMaster() {
+  if (scripMasterCache) {
+    return scripMasterCache;
   }
   try {
-    console.log("Fetching scrip master from Angel public URL...");
-    const response = await axios.get('https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json');
-    cachedScripMaster = response.data;
-    console.log(`Fetched ${cachedScripMaster.length} instruments`);
-    return cachedScripMaster;
-  } catch (error) {
-    console.error('Error fetching scrip master:', error);
-    throw error;
+    const res = await axios.get(
+      "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+    );
+    scripMasterCache = res.data;
+    console.info(`Fetched ${scripMasterCache.length} instruments`);
+    return scripMasterCache;
+  } catch (err) {
+    console.error("Failed to fetch scrip master:", err);
+    throw err;
   }
 }
 
-// Get symbol token for given symbol and exchange
-async function getSymbolToken(symbol, exchange) {
-  const scripMaster = await getScripMaster();
-  const upperSymbol = symbol.toUpperCase();
-  const upperExchange = exchange.toUpperCase();
+function pad(n) {
+  return n.toString().padStart(2, "0");
+}
 
-  const instrument = scripMaster.find(item =>
-    item.tradingsymbol === upperSymbol && item.exchange === upperExchange
+function formatDate(date) {
+  return (
+    date.getFullYear() +
+    "-" +
+    pad(date.getMonth() + 1) +
+    "-" +
+    pad(date.getDate()) +
+    " " +
+    pad(date.getHours()) +
+    ":" +
+    pad(date.getMinutes())
   );
-
-  if (!instrument) {
-    throw new Error(`Symbol '${symbol}' with exchange '${exchange}' not found in scrip master`);
-  }
-  console.log(`Found symbol token for ${symbol} on ${exchange}: ${instrument.token}`);
-  return instrument.token;
 }
 
-// Generate session and get feed token
-async function loginAndGetFeedToken() {
-  try {
-    console.log("Generating session...");
-    await smartApi.generateSession(CLIENT_ID, PASSWORD);
-    const feedToken = smartApi.getfeedToken();
-    console.log("Feed Token obtained:", feedToken);
-    return feedToken;
-  } catch (error) {
-    console.error("Error generating session:", error);
-    throw error;
-  }
-}
-
-// Fetch historical candle data using SmartAPI
-async function getHistoricalData(feedToken, symbolToken, exchange) {
-  const now = new Date();
-  const toDate = now;
-  const fromDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-
-  const pad = n => n.toString().padStart(2, '0');
-  const formatDate = date => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-
-  const payload = {
-    exchange: exchange.toUpperCase(),
-    symboltoken: symbolToken,
-    interval: "ONE_MINUTE",
-    fromdate: formatDate(fromDate),
-    todate: formatDate(toDate),
-  };
-
-  try {
-    console.log("Fetching historical data with payload:", payload);
-    const response = await smartApi.getHistoricalData(payload);
-    console.log('Historical data fetch successful');
-    return response;
-  } catch (error) {
-    console.error('Error fetching historical data:', error);
-    throw error;
-  }
-}
-
-// Main API handler (assuming Express.js style)
-async function handler(req, res) {
-  if (req.method !== 'POST') {
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed, use POST" });
   }
 
   const { symbol, exchange } = req.body;
-  if (!symbol || !exchange) {
-    return res.status(400).json({ error: "Missing 'symbol' or 'exchange' in request body" });
+  if (!symbol) {
+    return res.status(400).json({ error: "Missing symbol in request body" });
+  }
+  const ex = (exchange || "NSE").toUpperCase();
+
+  const clientId = process.env.ANGEL_CLIENT_ID;
+  const password = process.env.ANGEL_PASSWORD;
+
+  if (!clientId || !password || !process.env.ANGEL_API_KEY) {
+    return res
+      .status(500)
+      .json({ error: "Missing Angel API credentials in environment variables" });
   }
 
   try {
-    console.log(`Received request for symbol: '${symbol}', exchange: '${exchange}'`);
+    console.info(`Received request for symbol: '${symbol}', exchange: '${ex}'`);
 
-    // Login and get feed token
-    await loginAndGetFeedToken();
+    // 1. Generate session & get feed token
+    await smart_api.generateSession(clientId, password);
+    const feedToken = smart_api.getfeedToken();
+    console.info("Feed Token acquired");
 
-    // Get symbol token from scrip master
-    const symbolToken = await getSymbolToken(symbol, exchange);
+    // 2. Load scrip master JSON (cached)
+    const scripMaster = await fetchScripMaster();
 
-    // Fetch historical data
-    const historicalData = await getHistoricalData(smartApi.getfeedToken(), symbolToken, exchange);
+    // 3. Find matching instrument
+    const instrument = scripMaster.find(
+      (item) =>
+        item.tradingsymbol?.toUpperCase() === symbol.toUpperCase() &&
+        item.exchange?.toUpperCase() === ex
+    );
 
-    return res.status(200).json(historicalData);
+    if (!instrument) {
+      console.warn(`Symbol '${symbol}' with exchange '${ex}' not found in scrip master`);
+      return res.status(404).json({ error: "Symbol not found" });
+    }
+
+    const symbolToken = instrument.token;
+    console.info(`Found symbolToken: ${symbolToken}`);
+
+    // 4. Prepare dates (24 hours range)
+    const now = new Date();
+    const toDate = now;
+    const fromDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+    // 5. Fetch historical candle data
+    const historyRes = await axios.post(
+      "https://apiconnect.angelone.in/rest/secure/angelbroking/historical/v1/getCandleData",
+      {
+        exchange: ex,
+        symboltoken: symbolToken,
+        interval: "ONE_MINUTE",
+        fromdate: formatDate(fromDate),
+        todate: formatDate(toDate),
+      },
+      {
+        headers: {
+          "X-PrivateKey": process.env.ANGEL_API_KEY,
+          Accept: "application/json",
+          "X-SourceID": "WEB",
+          "X-ClientLocalIP": req.headers["x-forwarded-for"] || "127.0.0.1",
+          "X-ClientPublicIP": req.headers["x-forwarded-for"] || "127.0.0.1",
+          "X-MACAddress": "00:00:00:00:00:00",
+          "X-UserType": "USER",
+          Authorization: `Bearer ${feedToken}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    console.info("Historical data fetch successful");
+    return res.status(200).json(historyRes.data);
   } catch (error) {
-    console.error("Handler error:", error.message || error);
-    return res.status(500).json({ error: error.message || 'Internal server error' });
+    console.error(
+      "Failed to fetch data:",
+      error.response?.data || error.message || error
+    );
+    return res.status(500).json({ error: "Failed to fetch data" });
   }
 }
-
-module.exports = handler;
