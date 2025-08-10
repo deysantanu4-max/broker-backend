@@ -6,7 +6,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed, use POST" });
   }
 
-  const CLIENT_SECRET = process.env.ANGEL_API_KEY;
+  const CLIENT_SECRET = process.env.ANGEL_API_KEY;  // your private key from Vercel
   const ANGEL_API_BASE = "https://apiconnect.angelone.in";
 
   const { symbol, exchange } = req.body;
@@ -30,7 +30,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 1️⃣ Call searchBySymbol API to get symbolToken
+    // 1️⃣ Get symbol token from Angel's search API
     console.log(`Calling searchBySymbol API for symbol: ${symbol.toUpperCase()}, exchange: ${ex}`);
     const searchRes = await axios.get(
       `${ANGEL_API_BASE}/rest/secure/angelbroking/market/v1/searchBySymbol`,
@@ -53,38 +53,27 @@ export default async function handler(req, res) {
       }
     );
 
-    console.log("searchBySymbol response data:", JSON.stringify(searchRes.data));
-
+    // Check if the response contains valid data array
     if (!searchRes.data || !searchRes.data.data || searchRes.data.data.length === 0) {
       console.log("Symbol not found in search results");
       return res.status(404).json({ error: "Symbol not found" });
     }
 
+    // Grab the first symbol token (best match)
     const symbolToken = searchRes.data.data[0].symbolToken;
     console.log(`Found symbolToken: ${symbolToken}`);
 
-    // 2️⃣ Prepare dates in required format (yyyy-MM-dd HH:mm)
+    // 2️⃣ Prepare date range in "yyyy-MM-dd HH:mm" format (24 hours back)
     const now = new Date();
     const toDate = now;
-    const fromDate = new Date(now.getTime() - 24 * 60 * 60 * 1000); // 24 hours ago
+    const fromDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
     const pad = (n) => n.toString().padStart(2, "0");
 
-    const formatDate = (date) => {
-      return (
-        date.getFullYear() +
-        "-" +
-        pad(date.getMonth() + 1) +
-        "-" +
-        pad(date.getDate()) +
-        " " +
-        pad(date.getHours()) +
-        ":" +
-        pad(date.getMinutes())
-      );
-    };
+    const formatDate = (date) =>
+      `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 
-    // 3️⃣ Fetch historical data with POST body per API docs
+    // 3️⃣ Fetch historical candle data for symbol token
     const historyRes = await axios.post(
       `${ANGEL_API_BASE}/rest/secure/angelbroking/historical/v1/getCandleData`,
       {
