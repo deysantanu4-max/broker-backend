@@ -46,11 +46,10 @@ async function angelLogin() {
   console.log('✅ Angel login successful');
 }
 
-// Route handler
 app.post('/api/angel/historical', async (req, res) => {
   console.log("📩 Incoming request body:", req.body);
 
-  const { symbol, exchange } = req.body;
+  let { symbol, exchange } = req.body;
 
   if (!symbol || !exchange) {
     return res.status(400).json({ error: 'Missing required fields' });
@@ -61,14 +60,21 @@ app.post('/api/angel/historical', async (req, res) => {
       await angelLogin();
     }
 
+    // ✅ Auto-append "-EQ" for NSE/BSE equity stocks
+    symbol = symbol.trim().toUpperCase();
+    exchange = exchange.trim().toUpperCase();
+    if ((exchange === "NSE" || exchange === "BSE") && !symbol.endsWith("-EQ")) {
+      symbol = `${symbol}-EQ`;
+    }
+
     const scripMaster = await loadScripMaster();
 
     const instrument = scripMaster.find(
-      (inst) => inst.tradingsymbol === symbol.toUpperCase() && inst.exchange === exchange.toUpperCase()
+      (inst) => inst.tradingsymbol === symbol && inst.exchange === exchange
     );
 
     if (!instrument) {
-      return res.status(404).json({ error: 'Symbol not found in scrip master' });
+      return res.status(404).json({ error: `Symbol '${symbol}' not found in scrip master` });
     }
 
     const symbolToken = instrument.token;
@@ -83,7 +89,7 @@ app.post('/api/angel/historical', async (req, res) => {
     const candleRes = await axios.post(
       'https://apiconnect.angelone.in/rest/secure/angelbroking/historical/v1/getCandleData',
       {
-        exchange: exchange.toUpperCase(),
+        exchange: exchange,
         symboltoken: symbolToken,
         interval: 'ONE_MINUTE',
         fromdate: formatDate(fromDate),
@@ -115,5 +121,4 @@ app.post('/api/angel/historical', async (req, res) => {
   }
 });
 
-// Export for Vercel
 export default app;
