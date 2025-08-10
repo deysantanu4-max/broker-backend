@@ -2,6 +2,7 @@ import axios from "axios";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
+    console.log("Invalid method:", req.method);
     return res.status(405).json({ error: "Method not allowed, use POST" });
   }
 
@@ -10,7 +11,10 @@ export default async function handler(req, res) {
 
   const { symbol, exchange } = req.body;
 
+  console.log("Received request with symbol:", symbol, "exchange:", exchange);
+
   if (!symbol) {
+    console.log("Missing symbol in request body");
     return res.status(400).json({ error: "Missing symbol in request body" });
   }
 
@@ -18,6 +22,7 @@ export default async function handler(req, res) {
 
   let accessToken = req.headers["authorization"];
   if (!accessToken) {
+    console.log("No access token provided in headers");
     return res.status(401).json({ error: "No access token provided" });
   }
   if (accessToken.toLowerCase().startsWith("bearer ")) {
@@ -26,6 +31,7 @@ export default async function handler(req, res) {
 
   try {
     // 1️⃣ Get symbol token from Angel's search API
+    console.log(`Calling searchBySymbol API for symbol: ${symbol.toUpperCase()}, exchange: ${ex}`);
     const searchRes = await axios.get(
       `${ANGEL_API_BASE}/rest/secure/angelbroking/market/v1/searchBySymbol`,
       {
@@ -47,24 +53,30 @@ export default async function handler(req, res) {
       }
     );
 
+    console.log("searchBySymbol response data:", JSON.stringify(searchRes.data));
+
     if (
       !searchRes.data ||
       !searchRes.data.data ||
       searchRes.data.data.length === 0
     ) {
+      console.log("Symbol not found in search results");
       return res.status(404).json({ error: "Symbol not found" });
     }
 
     const symbolToken = searchRes.data.data[0].symbolToken;
+    console.log(`Found symbolToken: ${symbolToken}`);
 
     // 2️⃣ Fetch historical data using symbolToken
+    console.log(`Fetching historical data for symbolToken: ${symbolToken}`);
+
     const historyRes = await axios.post(
       `${ANGEL_API_BASE}/rest/secure/angelbroking/historical/v1/getCandleData`,
       {
         exchange: ex,
         symboltoken: symbolToken,
         interval: "ONE_MINUTE",
-        fromdate: "2024-08-01 09:15",  // You can make these dynamic or configurable
+        fromdate: "2024-08-01 09:15",  // Adjust these dates as needed
         todate: "2024-08-02 15:30",
       },
       {
@@ -81,6 +93,9 @@ export default async function handler(req, res) {
         },
       }
     );
+
+    console.log("Historical data fetch successful");
+    console.log("Historical data response:", JSON.stringify(historyRes.data));
 
     return res.status(200).json(historyRes.data);
   } catch (error) {
