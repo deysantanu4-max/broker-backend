@@ -1,12 +1,12 @@
-const express = require('express');
-const app = express();
-const historicalHandler = require('./historical'); // Make sure path is correct
+import express from 'express';
+import historicalRouter from './api/angel/historical.js';
 
+const app = express();
 app.use(express.json());
 
-app.post('/angel/historical', historicalHandler);
+app.use('/angel', historicalRouter);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server started on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
