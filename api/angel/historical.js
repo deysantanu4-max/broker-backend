@@ -1,127 +1,81 @@
-// api/angel/historical.js
+// historical.js
 
-import express from 'express';
-import { SmartAPI } from 'smartapi-javascript';
-import axios from 'axios';
-import dotenv from 'dotenv';
-import otp from 'otplib';
-import cors from 'cors';
+const axios = require('axios');
 
-dotenv.config();
-
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-const CLIENT_ID = process.env.ANGEL_CLIENT_ID;
-const PASSWORD = process.env.ANGEL_PASSWORD;
-const API_KEY = process.env.ANGEL_API_KEY;
-const TOTP_SECRET = process.env.ANGEL_TOTP_SECRET;
-
-if (!CLIENT_ID || !PASSWORD || !API_KEY || !TOTP_SECRET) {
-  console.error('❌ Missing required env vars: ANGEL_CLIENT_ID, ANGEL_PASSWORD, ANGEL_API_KEY, ANGEL_TOTP_SECRET');
-}
-
-let smart_api = new SmartAPI({ api_key: API_KEY });
 let scripMasterCache = null;
-let authToken = null;
-let feedToken = null;
+let cacheTimestamp = 0;
+const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours
 
-async function loadScripMaster() {
-  if (scripMasterCache) return scripMasterCache;
-  console.log('📥 Fetching scrip master JSON from Angel public URL...');
-  const res = await axios.get('https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json');
-  scripMasterCache = res.data;
-  console.log(`✅ Loaded ${scripMasterCache.length} instruments`);
-  return scripMasterCache;
+async function getScripMaster() {
+  const now = Date.now();
+
+  if (scripMasterCache && (now - cacheTimestamp) < CACHE_DURATION) {
+    return scripMasterCache;
+  }
+
+  try {
+    const response = await axios.get('https://public-api.angelbroking.com/rest/secure/angelbrokingapiscripmaster');
+    scripMasterCache = response.data;
+    cacheTimestamp = now;
+    console.log('Scrip master cache refreshed');
+    return scripMasterCache;
+  } catch (error) {
+    console.error('Error fetching scrip master:', error.message);
+    throw error;
+  }
 }
 
-async function angelLogin() {
-  const totp = otp.authenticator.generate(TOTP_SECRET);
-  const session = await smart_api.generateSession(CLIENT_ID, PASSWORD, totp);
+async function findSymbolToken(symbol, exchange) {
+  const scripMaster = await getScripMaster();
 
-  authToken = session.data.jwtToken;
-  feedToken = session.data.feedToken;
+  const match = scripMaster.find(
+    (s) =>
+      s.symbol.toUpperCase() === symbol.toUpperCase() &&
+      s.exchange === exchange
+  );
 
-  console.log('✅ Angel login successful');
+  if (!match) {
+    throw new Error(`Symbol '${symbol}' not found on exchange '${exchange}'`);
+  }
+
+  return match.token;
 }
 
-app.post('/api/angel/historical', async (req, res) => {
-  console.log("📩 Incoming request body:", req.body);
+async function fetchCandleData(symbol, exchange, fromDate, toDate, interval) {
+  try {
+    const symbolToken = await findSymbolToken(symbol, exchange);
 
-  let { symbol, exchange } = req.body;
+    const payload = {
+      exchange: exchange,
+      symboltoken: symbolToken,
+      interval: interval,
+      fromdate: fromDate,
+      todate: toDate,
+    };
 
-  if (!symbol || !exchange) {
+    const response = await axios.post(
+      'https://public-api.angelbroking.com/rest/secure/angelbrokingapiscripmaster/candleData',
+      payload
+    );
+
+    return response.data;
+  } catch (error) {
+    throw new Error(`Error fetching candle data: ${error.message}`);
+  }
+}
+
+module.exports = async (req, res) => {
+  const { symbol, exchange, fromDate, toDate, interval } = req.body;
+
+  if (!symbol || !exchange || !fromDate || !toDate || !interval) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
   try {
-    if (!feedToken) {
-      await angelLogin();
-    }
-
-    const scripMaster = await loadScripMaster();
-
-    // Ensure -EQ is present
-    const symbolWithEq = symbol.toUpperCase().endsWith("-EQ") ? symbol.toUpperCase() : `${symbol.toUpperCase()}-EQ`;
-
-    // Map exchange for Angel format
-    const exchangeMap = {
-      "NSE": "NSE_EQ",
-      "BSE": "BSE_EQ"
-    };
-    const mappedExchange = exchangeMap[exchange.toUpperCase()] || exchange.toUpperCase();
-
-    const instrument = scripMaster.find(
-      (inst) => inst.tradingsymbol === symbolWithEq && inst.exchange === mappedExchange
-    );
-
-    if (!instrument) {
-      return res.status(404).json({ error: `Symbol '${symbolWithEq}' not found in scrip master` });
-    }
-
-    const symbolToken = instrument.token;
-
-    const now = new Date();
-    const fromDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-
-    const pad = (n) => n.toString().padStart(2, '0');
-    const formatDate = (date) =>
-      `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-
-    const candleRes = await axios.post(
-      'https://apiconnect.angelone.in/rest/secure/angelbroking/historical/v1/getCandleData',
-      {
-        exchange: mappedExchange,
-        symboltoken: symbolToken,
-        interval: 'ONE_MINUTE',
-        fromdate: formatDate(fromDate),
-        todate: formatDate(now),
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${authToken}`,
-          'X-PrivateKey': API_KEY,
-          'X-UserType': 'USER',
-          'X-SourceID': 'WEB',
-          'X-ClientLocalIP': '127.0.0.1',
-          'X-ClientPublicIP': '127.0.0.1',
-          'X-MACAddress': '00:00:00:00:00:00',
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-      }
-    );
-
-    if (!candleRes.data || !candleRes.data.data) {
-      return res.status(500).json({ error: 'No data in response from Angel API' });
-    }
-
-    res.json(candleRes.data);
+    const candleData = await fetchCandleData(symbol, exchange, fromDate, toDate, interval);
+    res.json(candleData);
   } catch (error) {
-    console.error('❌ Failed to fetch data:', error.response?.data || error.message);
-    res.status(500).json({ error: 'Failed to fetch data' });
+    console.error('Fetch-data error:', error.message);
+    res.status(500).json({ error: error.message });
   }
-});
-
-export default app;
+};
