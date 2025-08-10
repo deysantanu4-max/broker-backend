@@ -1,113 +1,119 @@
-import express from "express";
-import cors from "cors";
-import bodyParser from "body-parser";
-import axios from "axios";
-import { SmartAPI } from "smartapi-javascript";
-import { authenticator } from "otplib";
+// api/angel/historical.js
+
+import express from 'express';
+import { SmartAPI } from 'smartapi-javascript';
+import axios from 'axios';
+import dotenv from 'dotenv';
+import otp from 'otplib';
+import cors from 'cors';
+
+dotenv.config();
 
 const app = express();
 app.use(cors());
-app.use(bodyParser.json());
+app.use(express.json());
 
-// Angel API credentials from Vercel env
 const CLIENT_ID = process.env.ANGEL_CLIENT_ID;
 const PASSWORD = process.env.ANGEL_PASSWORD;
 const API_KEY = process.env.ANGEL_API_KEY;
 const TOTP_SECRET = process.env.ANGEL_TOTP_SECRET;
 
+if (!CLIENT_ID || !PASSWORD || !API_KEY || !TOTP_SECRET) {
+  console.error('❌ Missing required env vars: ANGEL_CLIENT_ID, ANGEL_PASSWORD, ANGEL_API_KEY, ANGEL_TOTP_SECRET');
+}
+
 let smart_api = new SmartAPI({ api_key: API_KEY });
+let scripMasterCache = null;
 let authToken = null;
 let feedToken = null;
-let lastLoginTime = null;
 
-// Convert UTC → IST
-function toIST(date) {
-  return new Date(date.getTime() + (5.5 * 60 * 60 * 1000));
+async function loadScripMaster() {
+  if (scripMasterCache) return scripMasterCache;
+  console.log('📥 Fetching scrip master JSON from Angel public URL...');
+  const res = await axios.get('https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json');
+  scripMasterCache = res.data;
+  console.log(`✅ Loaded ${scripMasterCache.length} instruments`);
+  return scripMasterCache;
 }
 
-// Login and save token
 async function angelLogin() {
-  const totp = authenticator.generate(TOTP_SECRET);
-  console.log(`[LOGIN] Generated TOTP: ${totp}`);
-
+  const totp = otp.authenticator.generate(TOTP_SECRET);
   const session = await smart_api.generateSession(CLIENT_ID, PASSWORD, totp);
+
   authToken = session.data.jwtToken;
   feedToken = session.data.feedToken;
-  lastLoginTime = Date.now();
 
-  console.log("[LOGIN] Successful, JWT token acquired");
+  console.log('✅ Angel login successful');
 }
 
-// Ensure token is valid or re-login
-async function ensureLogin() {
-  const TOKEN_EXPIRY_MS = 23 * 60 * 60 * 1000; // Angel token ~24h
-  if (!authToken || Date.now() - lastLoginTime > TOKEN_EXPIRY_MS) {
-    console.log("[TOKEN] Refreshing login...");
-    await angelLogin();
+// Route handler
+app.post('/api/angel/historical', async (req, res) => {
+  console.log("📩 Incoming request body:", req.body);
+
+  const { symbol, exchange } = req.body;
+
+  if (!symbol || !exchange) {
+    return res.status(400).json({ error: 'Missing required fields' });
   }
-}
 
-// Fetch historical data
-app.post("/api/angel/historical", async (req, res) => {
   try {
-    await ensureLogin();
-
-    const { symbol, exchange, interval, days } = req.body;
-    if (!symbol || !exchange || !interval || !days) {
-      return res.status(400).json({ error: "Missing required fields" });
+    if (!feedToken) {
+      await angelLogin();
     }
 
-    // Get scrip master to find token
-    const scripRes = await axios.get(
-      "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
-    );
-    const inst = scripRes.data.find(
-      (i) =>
-        i.tradingsymbol.toUpperCase() === symbol.toUpperCase() &&
-        i.exchange.toUpperCase() === exchange.toUpperCase()
+    const scripMaster = await loadScripMaster();
+
+    const instrument = scripMaster.find(
+      (inst) => inst.tradingsymbol === symbol.toUpperCase() && inst.exchange === exchange.toUpperCase()
     );
 
-    if (!inst) {
-      return res.status(404).json({ error: "Instrument not found" });
+    if (!instrument) {
+      return res.status(404).json({ error: 'Symbol not found in scrip master' });
     }
 
-    const nowIST = toIST(new Date());
-    const fromIST = toIST(new Date(Date.now() - days * 24 * 60 * 60 * 1000));
+    const symbolToken = instrument.token;
 
-    const formatDate = (date) => {
-      return date.toISOString().replace("T", " ").substring(0, 16);
-    };
+    const now = new Date();
+    const fromDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
-    const payload = {
-      exchange: exchange.toUpperCase(),
-      symboltoken: inst.token,
-      interval: interval.toLowerCase(),
-      fromdate: formatDate(fromIST),
-      todate: formatDate(nowIST),
-    };
+    const pad = (n) => n.toString().padStart(2, '0');
+    const formatDate = (date) =>
+      `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 
-    const histRes = await axios.post(
-      "https://apiconnect.angelbroking.com/rest/secure/angelbroking/historical/v1/getCandleData",
-      payload,
+    const candleRes = await axios.post(
+      'https://apiconnect.angelone.in/rest/secure/angelbroking/historical/v1/getCandleData',
+      {
+        exchange: exchange.toUpperCase(),
+        symboltoken: symbolToken,
+        interval: 'ONE_MINUTE',
+        fromdate: formatDate(fromDate),
+        todate: formatDate(now),
+      },
       {
         headers: {
           Authorization: `Bearer ${authToken}`,
-          "X-PrivateKey": API_KEY,
-          "X-SourceID": "WEB",
-          "X-UserType": "USER",
-          Accept: "application/json",
-          "Content-Type": "application/json",
+          'X-PrivateKey': API_KEY,
+          'X-UserType': 'USER',
+          'X-SourceID': 'WEB',
+          'X-ClientLocalIP': '127.0.0.1',
+          'X-ClientPublicIP': '127.0.0.1',
+          'X-MACAddress': '00:00:00:00:00:00',
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
         },
       }
     );
 
-    res.json(histRes.data);
-  } catch (err) {
-    console.error("[ERROR]", err.response?.data || err.message);
-    res.status(500).json({
-      error: err.response?.data || "Internal Server Error",
-    });
+    if (!candleRes.data || !candleRes.data.data) {
+      return res.status(500).json({ error: 'No data in response from Angel API' });
+    }
+
+    res.json(candleRes.data);
+  } catch (error) {
+    console.error('❌ Failed to fetch data:', error.response?.data || error.message);
+    res.status(500).json({ error: 'Failed to fetch data' });
   }
 });
 
+// Export for Vercel
 export default app;
