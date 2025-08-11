@@ -1,5 +1,6 @@
-const express = require('express');
-const axios = require('axios');
+import express from 'express';
+import axios from 'axios';
+
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -16,7 +17,7 @@ function buildAngelHeaders(req) {
     'X-ClientLocalIP': req.headers['x-clientlocalip'] || '127.0.0.1',
     'X-ClientPublicIP': req.headers['x-clientpublicip'] || '127.0.0.1',
     'X-MACAddress': req.headers['x-macaddress'] || '00:00:00:00:00:00',
-    'X-PrivateKey': req.headers['x-privatekey'] || 'API_KEY',
+    'X-PrivateKey': req.headers['x-privatekey'] || 'API_KEY', // Replace with env var or secure value
   };
 }
 
