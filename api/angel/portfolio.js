@@ -1,91 +1,149 @@
-import express from 'express';
-import axios from 'axios';
+import axios from "axios";
 
-const app = express();
-const port = process.env.PORT || 3000;
-const ANGEL_API_KEY = process.env.ANGEL_API_KEY;
+let feedToken = "";
+let authToken = "";
 
-app.use(express.json());
+const API_KEY = process.env.ANGEL_API_KEY;
+const CLIENT_CODE = process.env.ANGEL_CLIENT_CODE;
+const PASSWORD = process.env.ANGEL_PASSWORD;
+const TOTP = process.env.ANGEL_TOTP;
 
-function buildAngelHeaders(req) {
-  let authHeader = req.headers['authorization'] || '';
-  
-  // Extract token, remove 'Bearer ' if present
-  let authToken = authHeader.startsWith('Bearer ') ? authHeader.substring(7) : authHeader;
-  
-  const headers = {
-    Authorization: `Bearer ${authToken}`,  // exactly like historical.js
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-    'X-UserType': 'USER',
-    'X-SourceID': 'WEB',
-    'X-ClientLocalIP': req.headers['x-clientlocalip'] || '127.0.0.1',
-    'X-ClientPublicIP': req.headers['x-clientpublicip'] || '127.0.0.1',
-    'X-MACAddress': req.headers['x-macaddress'] || '00:00:00:00:00:00',
-    'X-PrivateKey': process.env.ANGEL_API_KEY,
-  };
+// Login (same style as historical.js)
+async function angelLogin() {
+  try {
+    const loginResponse = await axios.post(
+      "https://apiconnect.angelbroking.com/rest/auth/angelbroking/user/v1/loginByPassword",
+      {
+        clientcode: CLIENT_CODE,
+        password: PASSWORD,
+        totp: TOTP
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+          "X-UserType": "USER",
+          "X-SourceID": "WEB",
+          "X-ClientLocalIP": "127.0.0.1",
+          "X-ClientPublicIP": "127.0.0.1",
+          "X-MACAddress": "00:00:00:00:00:00",
+          "X-PrivateKey": API_KEY
+        }
+      }
+    );
 
-  console.log('Built headers for Angel API:', headers);
-  return headers;
+    if (loginResponse.data.status === true) {
+      feedToken = loginResponse.data.data.feedToken;
+      authToken = loginResponse.data.data.jwtToken;
+      console.log("Angel Login Successful");
+    } else {
+      throw new Error(loginResponse.data.message || "Login failed");
+    }
+  } catch (error) {
+    console.error("Angel Login Error:", error.response?.data || error.message);
+    throw error;
+  }
 }
 
-app.all('/api/angel/portfolio', async (req, res) => {
-  try {
-    console.log(`Received request at /api/angel/portfolio - Method: ${req.method}`);
-    console.log('Request headers:', req.headers);
-
-    const headers = buildAngelHeaders(req);
-
-    // Get action from query (GET) or body (POST)
-    const action = req.method === 'GET' ? req.query.action : req.body.action;
-    console.log('Determined action:', action);
-
-    if (!action) {
-      console.warn('Missing action parameter in request');
-      return res.status(400).json({ error: 'Missing action parameter' });
-    }
-
-    let apiResponse;
-
-    if (action === 'holdings') {
-      console.log('Fetching holdings from Angel API...');
-      apiResponse = await axios.get(
-        'https://apiconnect.angelone.in/rest/secure/angelbroking/portfolio/v1/getAllHolding',
-        { headers }
-      );
-    } else if (action === 'positions') {
-      console.log('Fetching positions from Angel API...');
-      apiResponse = await axios.get(
-        'https://apiconnect.angelone.in/rest/secure/angelbroking/order/v1/getPosition',
-        { headers }
-      );
-    } else if (action === 'convertPosition') {
-      if (req.method !== 'POST') {
-        console.warn('Invalid method for convertPosition:', req.method);
-        return res.status(405).json({ error: 'Method Not Allowed. Use POST for convertPosition.' });
+export default async function handler(req, res) {
+  if (req.method === "GET") {
+    try {
+      if (!authToken) {
+        await angelLogin();
       }
-      console.log('Converting position with payload:', req.body.data);
-      apiResponse = await axios.post(
-        'https://apiconnect.angelone.in/rest/secure/angelbroking/order/v1/convertPosition',
-        req.body.data || {},
-        { headers }
+
+      // Fetch Holdings
+      const holdings = await axios.get(
+        "https://apiconnect.angelbroking.com/rest/secure/angelbroking/portfolio/v1/getPortfolioHoldings",
+        {
+          headers: {
+            "Authorization": `Bearer ${authToken}`,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-UserType": "USER",
+            "X-SourceID": "WEB",
+            "X-ClientLocalIP": "127.0.0.1",
+            "X-ClientPublicIP": "127.0.0.1",
+            "X-MACAddress": "00:00:00:00:00:00",
+            "X-PrivateKey": API_KEY
+          }
+        }
       );
-    } else {
-      console.warn('Invalid action parameter:', action);
-      return res.status(400).json({ error: 'Invalid action parameter' });
+
+      // Fetch Positions
+      const positions = await axios.get(
+        "https://apiconnect.angelbroking.com/rest/secure/angelbroking/portfolio/v1/getPortfolioPositions",
+        {
+          headers: {
+            "Authorization": `Bearer ${authToken}`,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-UserType": "USER",
+            "X-SourceID": "WEB",
+            "X-ClientLocalIP": "127.0.0.1",
+            "X-ClientPublicIP": "127.0.0.1",
+            "X-MACAddress": "00:00:00:00:00:00",
+            "X-PrivateKey": API_KEY
+          }
+        }
+      );
+
+      res.status(200).json({
+        holdings: holdings.data,
+        positions: positions.data
+      });
+
+    } catch (error) {
+      console.error("Portfolio Fetch Error:", error.response?.data || error.message);
+      res.status(500).json({
+        message: "Error fetching portfolio",
+        error: error.response?.data || error.message
+      });
     }
+  } else if (req.method === "POST") {
+    // Convert Position
+    try {
+      const { symboltoken, exchange, transactiontype, positiontype, producttype, quantity } = req.body;
 
-    console.log(`Angel API response for action '${action}':`, apiResponse.data);
-    res.json(apiResponse.data);
+      if (!authToken) {
+        await angelLogin();
+      }
 
-  } catch (error) {
-    console.error('Error in /api/angel/portfolio:', error.response?.data || error.message);
-    res.status(error.response?.status || 500).json({
-      error: error.response?.data || error.message || 'Internal Server Error',
-    });
+      const convertResponse = await axios.post(
+        "https://apiconnect.angelbroking.com/rest/secure/angelbroking/portfolio/v1/convertPosition",
+        {
+          symboltoken,
+          exchange,
+          transactiontype,
+          positiontype,
+          producttype,
+          quantity
+        },
+        {
+          headers: {
+            "Authorization": `Bearer ${authToken}`,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-UserType": "USER",
+            "X-SourceID": "WEB",
+            "X-ClientLocalIP": "127.0.0.1",
+            "X-ClientPublicIP": "127.0.0.1",
+            "X-MACAddress": "00:00:00:00:00:00",
+            "X-PrivateKey": API_KEY
+          }
+        }
+      );
+
+      res.status(200).json(convertResponse.data);
+
+    } catch (error) {
+      console.error("Convert Position Error:", error.response?.data || error.message);
+      res.status(500).json({
+        message: "Error converting position",
+        error: error.response?.data || error.message
+      });
+    }
+  } else {
+    res.status(405).json({ message: "Method Not Allowed" });
   }
-});
-
-app.listen(port, () => {
-  console.log(`Angel One API Proxy server running on port ${port}`);
-});
+}
