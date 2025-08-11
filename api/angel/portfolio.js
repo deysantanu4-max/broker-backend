@@ -23,6 +23,10 @@ function buildAngelHeaders(req) {
 
 // GET All Holdings
 app.get('/api/holdings', async (req, res) => {
+console.log('Received /api/holdings request:', {
+    headers: req.headers,
+    query: req.query,
+  });
   try {
     const headers = buildAngelHeaders(req);
 
@@ -31,6 +35,7 @@ app.get('/api/holdings', async (req, res) => {
       { headers }
     );
 
+    console.log('Angel API response:', response.data);
     res.json(response.data);
   } catch (error) {
     console.error('Error in /api/holdings:', error.response?.data || error.message);
@@ -42,14 +47,18 @@ app.get('/api/holdings', async (req, res) => {
 
 // GET Positions
 app.get('/api/positions', async (req, res) => {
+console.log('Received request for /api/positions');
+console.log('Request headers:', req.headers);
   try {
     const headers = buildAngelHeaders(req);
+    console.log('Built headers for Angel API:', headers);
 
     const response = await axios.get(
       'https://apiconnect.angelone.in/rest/secure/angelbroking/order/v1/getPosition',
       { headers }
     );
 
+    console.log('Angel API /getPosition response:', response.data);
     res.json(response.data);
   } catch (error) {
     console.error('Error in /api/positions:', error.response?.data || error.message);
