@@ -8,12 +8,13 @@ const ANGEL_API_KEY = process.env.ANGEL_API_KEY;
 app.use(express.json());
 
 function buildAngelHeaders(req) {
-  const authHeader = req.headers['authorization'] || '';
-  // Ensure the Authorization header starts with 'Bearer '
-  const authorization = authHeader.startsWith('Bearer ') ? authHeader : `Bearer ${authHeader}`;
-
+  let authHeader = req.headers['authorization'] || '';
+  
+  // Extract token, remove 'Bearer ' if present
+  let authToken = authHeader.startsWith('Bearer ') ? authHeader.substring(7) : authHeader;
+  
   const headers = {
-    Authorization: authorization,
+    Authorization: `Bearer ${authToken}`,  // exactly like historical.js
     'Content-Type': 'application/json',
     Accept: 'application/json',
     'X-UserType': 'USER',
@@ -21,8 +22,9 @@ function buildAngelHeaders(req) {
     'X-ClientLocalIP': req.headers['x-clientlocalip'] || '127.0.0.1',
     'X-ClientPublicIP': req.headers['x-clientpublicip'] || '127.0.0.1',
     'X-MACAddress': req.headers['x-macaddress'] || '00:00:00:00:00:00',
-    'X-PrivateKey': ANGEL_API_KEY,
+    'X-PrivateKey': process.env.ANGEL_API_KEY,
   };
+
   console.log('Built headers for Angel API:', headers);
   return headers;
 }
