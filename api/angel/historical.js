@@ -50,7 +50,7 @@ async function angelLogin() {
 app.post('/api/angel/historical', async (req, res) => {
   console.log("📩 Incoming request body:", req.body);
 
-  const { symbol, exchange } = req.body;
+  let { symbol, exchange } = req.body;
 
   if (!symbol || !exchange) {
     return res.status(400).json({ error: 'Missing required fields' });
@@ -63,16 +63,32 @@ app.post('/api/angel/historical', async (req, res) => {
 
     const scripMaster = await loadScripMaster();
 
-    const instrument = scripMaster.find(
-      (inst) => inst.tradingsymbol === symbol.toUpperCase() && inst.exchange === exchange.toUpperCase()
+    // Normalize inputs
+    symbol = symbol.toUpperCase();
+    exchange = exchange.toUpperCase();
+
+    // Append '-EQ' suffix if not present
+    const symbolWithEq = symbol.endsWith('-EQ') ? symbol : `${symbol}-EQ`;
+    console.log(`🔍 Searching for symbol: ${symbolWithEq}, exchange: ${exchange}`);
+
+    // Search in scrip master using correct keys: symbol and exch_seg
+    const instrument = scripMaster.find(inst => 
+      inst.symbol.toUpperCase() === symbolWithEq && inst.exch_seg.toUpperCase() === exchange
     );
 
     if (!instrument) {
-      return res.status(404).json({ error: 'Symbol not found in scrip master' });
+      // Log some close matches for debugging
+      const closeMatches = scripMaster.filter(inst =>
+        inst.symbol.toUpperCase().includes(symbol) && inst.exch_seg.toUpperCase() === exchange
+      );
+      console.log(`❌ Symbol '${symbolWithEq}' not found on exchange '${exchange}'. Found ${closeMatches.length} close matches:`, closeMatches.slice(0, 10).map(i => i.symbol));
+      return res.status(404).json({ error: `Symbol '${symbolWithEq}' not found in scrip master for exchange '${exchange}'` });
     }
 
     const symbolToken = instrument.token;
+    console.log(`✅ Found symbol token: ${symbolToken} for ${symbolWithEq}`);
 
+    // Prepare date range
     const now = new Date();
     const fromDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
@@ -80,10 +96,12 @@ app.post('/api/angel/historical', async (req, res) => {
     const formatDate = (date) =>
       `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 
+    console.log(`⏳ Fetching candle data from ${formatDate(fromDate)} to ${formatDate(now)}...`);
+
     const candleRes = await axios.post(
       'https://apiconnect.angelone.in/rest/secure/angelbroking/historical/v1/getCandleData',
       {
-        exchange: exchange.toUpperCase(),
+        exchange,
         symboltoken: symbolToken,
         interval: 'ONE_MINUTE',
         fromdate: formatDate(fromDate),
@@ -105,15 +123,17 @@ app.post('/api/angel/historical', async (req, res) => {
     );
 
     if (!candleRes.data || !candleRes.data.data) {
+      console.error('❌ No data in response from Angel API');
       return res.status(500).json({ error: 'No data in response from Angel API' });
     }
 
+    console.log(`✅ Successfully fetched candle data for ${symbolWithEq}`);
     res.json(candleRes.data);
+
   } catch (error) {
-    console.error('❌ Failed to fetch data:', error.response?.data || error.message);
+    console.error('❌ Failed to fetch data:', error.response?.data || error.message || error);
     res.status(500).json({ error: 'Failed to fetch data' });
   }
 });
 
-// Export for Vercel
 export default app;
