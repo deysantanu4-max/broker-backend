@@ -14,7 +14,7 @@ function buildAngelHeaders(req) {
   let authToken = authHeader.startsWith('Bearer ') ? authHeader.substring(7) : authHeader;
   
   const headers = {
-    Authorization: `Bearer ${jwtToken}`,  // exactly like historical.js
+    Authorization: `Bearer ${authToken}`,  // exactly like historical.js
     'Content-Type': 'application/json',
     Accept: 'application/json',
     'X-UserType': 'USER',
