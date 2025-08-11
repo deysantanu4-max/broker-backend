@@ -3,6 +3,7 @@ import axios from 'axios';
 
 const app = express();
 const port = process.env.PORT || 3000;
+const ANGEL_API_KEY = process.env.ANGEL_API_KEY; 
 
 app.use(express.json());
 
@@ -16,7 +17,7 @@ function buildAngelHeaders(req) {
     'X-ClientLocalIP': req.headers['x-clientlocalip'] || '127.0.0.1',
     'X-ClientPublicIP': req.headers['x-clientpublicip'] || '127.0.0.1',
     'X-MACAddress': req.headers['x-macaddress'] || '00:00:00:00:00:00',
-    'X-PrivateKey': req.headers['x-privatekey'] || 'ANGEL_API_KEY', // Replace with your secure key or env variable
+    'X-PrivateKey': process.env.ANGEL_API_KEY, 
   };
   console.log('Built headers for Angel API:', headers);
   return headers;
