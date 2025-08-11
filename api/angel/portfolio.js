@@ -17,7 +17,7 @@ function buildAngelHeaders(req) {
     'X-ClientLocalIP': req.headers['x-clientlocalip'] || '127.0.0.1',
     'X-ClientPublicIP': req.headers['x-clientpublicip'] || '127.0.0.1',
     'X-MACAddress': req.headers['x-macaddress'] || '00:00:00:00:00:00',
-    'X-PrivateKey': process.env.ANGEL_API_KEY, 
+    'X-PrivateKey': ANGEL_API_KEY, 
   };
   console.log('Built headers for Angel API:', headers);
   return headers;
