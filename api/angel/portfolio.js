@@ -7,7 +7,7 @@ const port = process.env.PORT || 3000;
 app.use(express.json());
 
 function buildAngelHeaders(req) {
-  return {
+  const headers = {
     Authorization: req.headers['authorization'] || '',
     'Content-Type': 'application/json',
     Accept: 'application/json',
@@ -16,48 +16,59 @@ function buildAngelHeaders(req) {
     'X-ClientLocalIP': req.headers['x-clientlocalip'] || '127.0.0.1',
     'X-ClientPublicIP': req.headers['x-clientpublicip'] || '127.0.0.1',
     'X-MACAddress': req.headers['x-macaddress'] || '00:00:00:00:00:00',
-    'X-PrivateKey': req.headers['x-privatekey'] || 'API_KEY', // put your real key here or env var
+    'X-PrivateKey': req.headers['x-privatekey'] || 'API_KEY', // Replace with your secure key or env variable
   };
+  console.log('Built headers for Angel API:', headers);
+  return headers;
 }
 
 app.all('/api/angel/portfolio', async (req, res) => {
   try {
+    console.log(`Received request at /api/angel/portfolio - Method: ${req.method}`);
+    console.log('Request headers:', req.headers);
+
     const headers = buildAngelHeaders(req);
 
-    // Determine action either from query param or body param
-    // For GET: use req.query.action, for POST: use req.body.action
+    // Get action from query (GET) or body (POST)
     const action = req.method === 'GET' ? req.query.action : req.body.action;
+    console.log('Determined action:', action);
 
     if (!action) {
+      console.warn('Missing action parameter in request');
       return res.status(400).json({ error: 'Missing action parameter' });
     }
 
     let apiResponse;
 
     if (action === 'holdings') {
+      console.log('Fetching holdings from Angel API...');
       apiResponse = await axios.get(
         'https://apiconnect.angelone.in/rest/secure/angelbroking/portfolio/v1/getAllHolding',
         { headers }
       );
     } else if (action === 'positions') {
+      console.log('Fetching positions from Angel API...');
       apiResponse = await axios.get(
         'https://apiconnect.angelone.in/rest/secure/angelbroking/order/v1/getPosition',
         { headers }
       );
     } else if (action === 'convertPosition') {
-      // For convertPosition, expect POST with body
       if (req.method !== 'POST') {
+        console.warn('Invalid method for convertPosition:', req.method);
         return res.status(405).json({ error: 'Method Not Allowed. Use POST for convertPosition.' });
       }
+      console.log('Converting position with payload:', req.body.data);
       apiResponse = await axios.post(
         'https://apiconnect.angelone.in/rest/secure/angelbroking/order/v1/convertPosition',
-        req.body.data || {}, // assuming payload is inside `data` key
+        req.body.data || {},
         { headers }
       );
     } else {
+      console.warn('Invalid action parameter:', action);
       return res.status(400).json({ error: 'Invalid action parameter' });
     }
 
+    console.log(`Angel API response for action '${action}':`, apiResponse.data);
     res.json(apiResponse.data);
 
   } catch (error) {
