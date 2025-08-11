@@ -90,7 +90,7 @@ app.post('/api/angel/historical', async (req, res) => {
 
     // Prepare date range
     const now = new Date();
-    const fromDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const fromDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
     const pad = (n) => n.toString().padStart(2, '0');
     const formatDate = (date) =>
