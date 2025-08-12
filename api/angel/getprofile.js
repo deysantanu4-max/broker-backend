@@ -27,29 +27,35 @@ let authToken = null;
 let feedToken = null;
 
 async function angelLogin() {
+  console.log("🔐 Performing Angel login...");
   const totp = otp.authenticator.generate(TOTP_SECRET);
   const session = await smart_api.generateSession(CLIENT_ID, PASSWORD, totp);
 
   authToken = session.data.jwtToken;
   feedToken = session.data.feedToken;
 
-  console.log('✅ Angel login successful');
+  console.log('✅ Angel login successful. Tokens set.');
 }
 
 // POST /api/angel/getprofile
 app.post('/api/angel/getprofile', async (req, res) => {
+  console.log("📩 Received getprofile request with body:", req.body);
   const { clientcode } = req.body;
 
   if (!clientcode) {
+    console.log("❌ Missing clientcode in request body");
     return res.status(400).json({ error: 'Missing required parameter: clientcode' });
   }
 
   try {
     if (!authToken) {
+      console.log("⚠️ No authToken present, logging in...");
       await angelLogin();
+    } else {
+      console.log("✅ AuthToken present, proceeding with API call...");
     }
 
-    // Make GET request to Angel profile API
+    // Setup request config for Angel profile API
     const config = {
       method: 'get',
       url: 'https://apiconnect.angelone.in/rest/secure/angelbroking/user/v1/getProfile',
@@ -64,14 +70,16 @@ app.post('/api/angel/getprofile', async (req, res) => {
         'X-MACAddress': '00:00:00:00:00:00',
         'X-PrivateKey': API_KEY,
       },
-      params: {
-        clientcode,
-      },
+      params: { clientcode },
     };
 
+    console.log("📡 Calling Angel profile API...");
     const response = await axios(config);
+    console.log("✅ Angel profile API responded with status:", response.status);
+    console.log("📦 Response data:", JSON.stringify(response.data, null, 2));
 
     if (response.status !== 200 || !response.data) {
+      console.log("❌ Invalid response from Angel API");
       return res.status(500).json({ error: 'Failed to fetch profile from Angel API' });
     }
 
@@ -81,12 +89,13 @@ app.post('/api/angel/getprofile', async (req, res) => {
     });
 
   } catch (error) {
-    // If auth token expired or invalid, try to relogin once
+    console.error("⚠️ Error fetching profile:", error.response?.data || error.message || error);
+
     if (error.response && (error.response.status === 401 || error.response.status === 403)) {
       try {
+        console.log("🔄 Token expired or unauthorized, retrying login...");
         await angelLogin();
 
-        // Retry after relogin
         const retryConfig = {
           method: 'get',
           url: 'https://apiconnect.angelone.in/rest/secure/angelbroking/user/v1/getProfile',
@@ -101,13 +110,13 @@ app.post('/api/angel/getprofile', async (req, res) => {
             'X-MACAddress': '00:00:00:00:00:00',
             'X-PrivateKey': API_KEY,
           },
-          params: {
-            clientcode,
-          },
+          params: { clientcode },
         };
 
+        console.log("📡 Retrying Angel profile API call...");
         const retryResponse = await axios(retryConfig);
 
+        console.log("✅ Retry successful. Responding with data.");
         return res.json({
           success: true,
           data: retryResponse.data,
@@ -122,7 +131,6 @@ app.post('/api/angel/getprofile', async (req, res) => {
       }
     }
 
-    console.error('❌ Error fetching profile:', error.response?.data || error.message || error);
     res.status(500).json({
       success: false,
       message: error.response?.data?.message || error.message || 'Failed to fetch profile',
