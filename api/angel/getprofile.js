@@ -10,57 +10,64 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const CLIENT_ID = process.env.ANGEL_CLIENT_ID;
-const PASSWORD = process.env.ANGEL_PASSWORD;
 const API_KEY = process.env.ANGEL_API_KEY;
-const TOTP_SECRET = process.env.ANGEL_TOTP_SECRET;
-
-if (!CLIENT_ID || !PASSWORD || !API_KEY || !TOTP_SECRET) {
-  console.error('❌ Missing required env vars: ANGEL_CLIENT_ID, ANGEL_PASSWORD, ANGEL_API_KEY, ANGEL_TOTP_SECRET');
+if (!API_KEY) {
+  console.error('❌ Missing ANGEL_API_KEY in env');
   process.exit(1);
 }
 
 const smart_api = new SmartAPI({ api_key: API_KEY });
 
 app.post('/', async (req, res) => {
+  const { clientcode, password, totp } = req.body;
+
+  if (!clientcode || !password) {
+    return res.status(400).json({ error: 'Missing required parameters: clientcode, password' });
+  }
+
   try {
-    console.log('➡️ Starting Angel profile fetch process');
+    console.log(`➡️ Starting login for client: ${clientcode}`);
 
-    const totp = otp.authenticator.generate(TOTP_SECRET);
-    console.log(`🔐 Generated TOTP: ${totp}`);
+    // If TOTP not provided, generate one dynamically from env TOTP_SECRET
+    let generatedTotp = totp;
+    if (!generatedTotp) {
+      if (!process.env.ANGEL_TOTP_SECRET) {
+        return res.status(400).json({ error: 'TOTP not provided and ANGEL_TOTP_SECRET missing in env' });
+      }
+      generatedTotp = otp.authenticator.generate(process.env.ANGEL_TOTP_SECRET);
+      console.log(`🔐 Generated TOTP dynamically: ${generatedTotp}`);
+    } else {
+      console.log('🔐 Using TOTP provided by client');
+    }
 
-    console.log(`🧾 Logging in client: ${CLIENT_ID}`);
-    const session = await smart_api.generateSession(CLIENT_ID, PASSWORD, totp);
-    console.log('✅ Login successful');
+    // Login session with user credentials + TOTP
+    const session = await smart_api.generateSession(clientcode, password, generatedTotp);
+    console.log(`✅ Login successful for client: ${clientcode}`);
 
     const jwtToken = session?.data?.jwtToken;
     if (!jwtToken) {
-      throw new Error('JWT token missing in session response');
+      throw new Error('JWT token missing in login session response');
     }
 
-    console.log('🔎 Fetching profile with JWT token');
+    console.log(`🔎 Fetching profile for client: ${clientcode} using JWT token`);
     const profileResponse = await smart_api.getProfile({
-      clientcode: CLIENT_ID,
-      jwtToken: jwtToken,
+      clientcode,
+      jwtToken,
     });
 
-    console.log('✅ Profile fetched successfully');
+    console.log(`✅ Profile fetched successfully for client: ${clientcode}`);
+
     res.json({
       success: true,
       data: profileResponse.data,
     });
 
   } catch (error) {
-    console.error('❌ Error fetching profile:', error.response?.data || error.message || error);
-
-    const message =
-      error.response?.data?.message ||
-      error.message ||
-      'Failed to fetch profile';
+    console.error('❌ Error in getprofile:', error.response?.data || error.message || error);
 
     res.status(500).json({
       success: false,
-      message,
+      message: error.response?.data?.message || error.message || 'Failed to fetch profile',
     });
   }
 });
