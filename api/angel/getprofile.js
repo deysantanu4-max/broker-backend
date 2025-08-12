@@ -1,4 +1,7 @@
+// api/angel/getprofile.js
+
 import express from 'express';
+import { SmartAPI } from 'smartapi-javascript';
 import axios from 'axios';
 import dotenv from 'dotenv';
 import otp from 'otplib';
@@ -10,88 +13,116 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+const CLIENT_ID = process.env.ANGEL_CLIENT_ID;
+const PASSWORD = process.env.ANGEL_PASSWORD;
 const API_KEY = process.env.ANGEL_API_KEY;
 const TOTP_SECRET = process.env.ANGEL_TOTP_SECRET;
 
-if (!API_KEY) {
-  console.error('❌ Missing ANGEL_API_KEY in env');
-  process.exit(1);
+if (!CLIENT_ID || !PASSWORD || !API_KEY || !TOTP_SECRET) {
+  console.error('❌ Missing required env vars: ANGEL_CLIENT_ID, ANGEL_PASSWORD, ANGEL_API_KEY, ANGEL_TOTP_SECRET');
 }
 
-// Helper function to login and get JWT token
-async function loginAndGetToken(clientcode, password, totp) {
-  // If no TOTP provided, generate one dynamically
-  let generatedTotp = totp;
-  if (!generatedTotp) {
-    if (!TOTP_SECRET) throw new Error('TOTP not provided and TOTP_SECRET missing');
-    generatedTotp = otp.authenticator.generate(TOTP_SECRET);
-  }
+let smart_api = new SmartAPI({ api_key: API_KEY });
+let authToken = null;
+let feedToken = null;
 
-  // Login API call to Angel to get JWT token
-  const loginResponse = await axios.post('https://apiconnect.angelone.in/rest/secure/angelbroking/user/v1/loginByPassword', {
-    clientcode,
-    password,
-    totp: generatedTotp
-  }, {
-    headers: {
-      'X-PrivateKey': API_KEY,
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'X-SourceID': 'WEB',
-      'X-UserType': 'USER'
-    }
-  });
+async function angelLogin() {
+  const totp = otp.authenticator.generate(TOTP_SECRET);
+  const session = await smart_api.generateSession(CLIENT_ID, PASSWORD, totp);
 
-  if (!loginResponse.data.status || !loginResponse.data.data?.jwtToken) {
-    throw new Error('Login failed or JWT token missing');
-  }
+  authToken = session.data.jwtToken;
+  feedToken = session.data.feedToken;
 
-  return loginResponse.data.data.jwtToken;
+  console.log('✅ Angel login successful');
 }
 
-// GET profile from Angel using JWT token
-async function getProfileFromAngel(jwtToken) {
-  const profileResponse = await axios.get('https://apiconnect.angelone.in/rest/secure/angelbroking/user/v1/getProfile', {
-    headers: {
-      'Authorization': `Bearer ${jwtToken}`,
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'X-UserType': 'USER',
-      'X-SourceID': 'WEB',
-      'X-PrivateKey': API_KEY
-    }
-  });
+// POST /api/angel/getprofile
+app.post('/api/angel/getprofile', async (req, res) => {
+  const { clientcode } = req.body;
 
-  if (!profileResponse.data.status) {
-    throw new Error(profileResponse.data.message || 'Failed to fetch profile');
+  if (!clientcode) {
+    return res.status(400).json({ error: 'Missing required parameter: clientcode' });
   }
 
-  return profileResponse.data.data;
-}
-
-app.post('/', async (req, res) => {
   try {
-    const { clientcode, password, totp } = req.body;
-
-    if (!clientcode || !password) {
-      return res.status(400).json({ success: false, message: 'Missing clientcode or password' });
+    if (!authToken) {
+      await angelLogin();
     }
 
-    // Login and get JWT token
-    const jwtToken = await loginAndGetToken(clientcode, password, totp);
-    console.log(`✅ Logged in and got JWT token for client: ${clientcode}`);
+    // Make GET request to Angel profile API
+    const config = {
+      method: 'get',
+      url: 'https://apiconnect.angelone.in/rest/secure/angelbroking/user/v1/getProfile',
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'X-UserType': 'USER',
+        'X-SourceID': 'WEB',
+        'X-ClientLocalIP': '127.0.0.1', // can be dynamic if you want
+        'X-ClientPublicIP': '127.0.0.1',
+        'X-MACAddress': '00:00:00:00:00:00',
+        'X-PrivateKey': API_KEY,
+      },
+      params: {
+        clientcode,
+      },
+    };
 
-    // Get profile from Angel API
-    const profileData = await getProfileFromAngel(jwtToken);
-    console.log(`✅ Fetched profile for client: ${clientcode}`);
+    const response = await axios(config);
+
+    if (response.status !== 200 || !response.data) {
+      return res.status(500).json({ error: 'Failed to fetch profile from Angel API' });
+    }
 
     res.json({
       success: true,
-      data: profileData
+      data: response.data,
     });
 
   } catch (error) {
-    console.error('❌ Error in getprofile:', error.response?.data || error.message || error);
+    // If auth token expired or invalid, try to relogin once
+    if (error.response && (error.response.status === 401 || error.response.status === 403)) {
+      try {
+        await angelLogin();
+
+        // Retry after relogin
+        const retryConfig = {
+          method: 'get',
+          url: 'https://apiconnect.angelone.in/rest/secure/angelbroking/user/v1/getProfile',
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            'X-UserType': 'USER',
+            'X-SourceID': 'WEB',
+            'X-ClientLocalIP': '127.0.0.1',
+            'X-ClientPublicIP': '127.0.0.1',
+            'X-MACAddress': '00:00:00:00:00:00',
+            'X-PrivateKey': API_KEY,
+          },
+          params: {
+            clientcode,
+          },
+        };
+
+        const retryResponse = await axios(retryConfig);
+
+        return res.json({
+          success: true,
+          data: retryResponse.data,
+        });
+
+      } catch (retryError) {
+        console.error('❌ Retry failed:', retryError.response?.data || retryError.message || retryError);
+        return res.status(500).json({
+          success: false,
+          message: retryError.response?.data?.message || retryError.message || 'Failed to fetch profile after retry',
+        });
+      }
+    }
+
+    console.error('❌ Error fetching profile:', error.response?.data || error.message || error);
     res.status(500).json({
       success: false,
       message: error.response?.data?.message || error.message || 'Failed to fetch profile',
