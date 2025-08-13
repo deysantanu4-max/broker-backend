@@ -55,9 +55,25 @@ function buildAngelHeaders() {
   };
 }
 
-// Mapping from API keys to friendly labels
+// Mapping from API keys to friendly labels & fixed order
+const orderedKeys = [
+  "availablecash",
+  "availableintradaypayin",
+  "availablelimitmargin",
+  "collateral",
+  "m2munrealized",
+  "m2mrealized",
+  "utiliseddebits",
+  "utilisedspan",
+  "utilisedoptionpremium",
+  "utilisedholdingsales",
+  "utilisedexposure",
+  "utilisedturnover",
+  "utilisedpayout",
+  "net"
+];
+
 const keyMapping = {
-  net: "Net",
   availablecash: "Available Cash",
   availableintradaypayin: "Available Intraday Payin",
   availablelimitmargin: "Available Limit Margin",
@@ -70,7 +86,8 @@ const keyMapping = {
   utilisedholdingsales: "Utilised Holding Sales",
   utilisedexposure: "Utilised Exposure",
   utilisedturnover: "Utilised Turnover",
-  utilisedpayout: "Utilised Payout"
+  utilisedpayout: "Utilised Payout",
+  net: "Net"
 };
 
 app.get('/api/angel/funds', async (req, res) => {
@@ -89,8 +106,6 @@ app.get('/api/angel/funds', async (req, res) => {
       { headers }
     );
 
-    console.log("📦 Raw Angel API Funds Response:", JSON.stringify(apiResponse.data, null, 2));
-
     if (!apiResponse.data || !apiResponse.data.data) {
       console.warn('⚠ No funds data returned from Angel API');
       return res.status(200).json({
@@ -100,13 +115,19 @@ app.get('/api/angel/funds', async (req, res) => {
     }
 
     console.log(`✅ Funds data retrieved successfully`);
+    console.log("🔍 Raw API funds data:", JSON.stringify(apiResponse.data.data, null, 2));
 
-    // Transform keys and replace nulls with "N/A"
     const rawData = apiResponse.data.data;
+
+    // Transform and order data
     const transformedData = {};
-    Object.keys(rawData).forEach(key => {
-      const newKey = keyMapping[key.toLowerCase()] || key; // fallback to original if not mapped
-      transformedData[newKey] = rawData[key] === null ? "N/A" : rawData[key];
+    orderedKeys.forEach(key => {
+      const label = keyMapping[key] || key;
+      let value = rawData[key];
+      if (value === null || value === undefined) {
+        value = "N/A";
+      }
+      transformedData[label] = value;
     });
 
     res.status(200).json({
