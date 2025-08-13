@@ -104,7 +104,17 @@ app.all('/api/angel/portfolio', async (req, res) => {
     }
 
     console.log(`✅ Angel API response for '${action}' fetched successfully`);
-    res.json(apiResponse.data);
+    if (!apiResponse.data || !apiResponse.data.data) {
+  console.warn(`⚠ Angel API returned SUCCESS but no portfolio data for action '${action}'. Full response:`, JSON.stringify(apiResponse.data, null, 2));
+  return res.status(200).json({
+    status: false,
+    message: `No data returned from Angel for action '${action}'`,
+    rawResponse: apiResponse.data
+  });
+}
+
+console.log(`✅ Angel API returned ${Array.isArray(apiResponse.data.data) ? apiResponse.data.data.length : 1} record(s) for action '${action}'.`);
+res.json(apiResponse.data);
 
   } catch (error) {
     console.error('❌ Error in /api/angel/portfolio:', error.response?.data || error.message);
