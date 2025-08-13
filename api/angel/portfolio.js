@@ -92,12 +92,17 @@ app.all('/api/angel/portfolio', async (req, res) => {
       if (req.method !== 'POST') {
         return res.status(405).json({ error: 'Method Not Allowed. Use POST for convertPosition.' });
       }
+
       console.log('♻️ Converting position with data:', req.body.data);
+
       apiResponse = await axios.post(
         'https://apiconnect.angelone.in/rest/secure/angelbroking/order/v1/convertPosition',
         req.body.data || {},
         { headers }
       );
+
+      // Log the entire Angel API response for debugging
+      console.log(`📬 Raw Angel API response for convertPosition:`, JSON.stringify(apiResponse.data, null, 2));
 
       if (apiResponse.data && apiResponse.data.status) {
         return res.status(200).json({
@@ -107,7 +112,8 @@ app.all('/api/angel/portfolio', async (req, res) => {
       } else {
         return res.status(200).json({
           status: "error",
-          message: apiResponse.data?.message || "Failed to convert position"
+          message: apiResponse.data?.message || "Failed to convert position",
+          details: apiResponse.data || {}
         });
       }
     } 
@@ -127,9 +133,9 @@ app.all('/api/angel/portfolio', async (req, res) => {
       returnedData = returnedData.positions;
     }
 
-    // Ensure it's always an array
+    // Check for empty or missing data
     if (!Array.isArray(returnedData) || returnedData.length === 0) {
-      console.warn(`⚠ No data returned from Angel for action '${action}'.`);
+      console.warn(`⚠ No data returned from Angel for action '${action}'. Full response:`, JSON.stringify(apiResponse.data, null, 2));
       return res.status(200).json({
         success: false,
         message: "No data found"
@@ -137,8 +143,6 @@ app.all('/api/angel/portfolio', async (req, res) => {
     }
 
     console.log(`✅ Angel API returned ${returnedData.length} record(s) for action '${action}'.`);
-
-    // Debug log first 3 records for inspection
     console.log(`🔍 Sample records for '${action}':`, JSON.stringify(returnedData.slice(0, 3), null, 2));
 
     return res.status(200).json({
