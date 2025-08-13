@@ -118,19 +118,29 @@ app.all('/api/angel/portfolio', async (req, res) => {
 
     console.log(`✅ Angel API response for '${action}' fetched successfully`);
 
-    // Common handling for holdings & positions
-    if (!apiResponse.data || !apiResponse.data.data || (Array.isArray(apiResponse.data.data) && apiResponse.data.data.length === 0)) {
-      console.warn(`⚠ No data returned from Angel for action '${action}'. Full response:`, JSON.stringify(apiResponse.data, null, 2));
+    // Unwrap holdings or positions array
+    let returnedData = apiResponse.data?.data || [];
+
+    if (action === 'holdings' && returnedData.holdings) {
+      returnedData = returnedData.holdings;
+    }
+    if (action === 'positions' && returnedData.positions) {
+      returnedData = returnedData.positions;
+    }
+
+    // Ensure it's always an array
+    if (!Array.isArray(returnedData) || returnedData.length === 0) {
+      console.warn(`⚠ No data returned from Angel for action '${action}'.`);
       return res.status(200).json({
         success: false,
         message: "No data found"
       });
     }
 
-    console.log(`✅ Angel API returned ${Array.isArray(apiResponse.data.data) ? apiResponse.data.data.length : 1} record(s) for action '${action}'.`);
+    console.log(`✅ Angel API returned ${returnedData.length} record(s) for action '${action}'.`);
     return res.status(200).json({
       success: true,
-      data: apiResponse.data.data
+      data: returnedData
     });
 
   } catch (error) {
