@@ -26,7 +26,6 @@ let smart_api = new SmartAPI({ api_key: API_KEY });
 let authToken = null;
 let tokenTimestamp = null;
 
-// Login function
 async function angelLogin() {
   const totp = otp.authenticator.generate(TOTP_SECRET);
   const session = await smart_api.generateSession(CLIENT_ID, PASSWORD, totp);
@@ -35,14 +34,12 @@ async function angelLogin() {
   console.log('✅ Angel login successful (portfolio)');
 }
 
-// Token expiry check
 function isTokenExpired() {
   if (!authToken || !tokenTimestamp) return true;
   const hoursSinceLogin = (Date.now() - tokenTimestamp) / (1000 * 60 * 60);
-  return hoursSinceLogin > 23; // refresh before 24 hrs
+  return hoursSinceLogin > 23;
 }
 
-// Build headers
 function buildAngelHeaders() {
   return {
     Authorization: `Bearer ${authToken}`,
@@ -101,7 +98,6 @@ app.all('/api/angel/portfolio', async (req, res) => {
         { headers }
       );
 
-      // Log the entire Angel API response for debugging
       console.log(`📬 Raw Angel API response for convertPosition:`, JSON.stringify(apiResponse.data, null, 2));
 
       if (apiResponse.data && apiResponse.data.status) {
@@ -112,7 +108,7 @@ app.all('/api/angel/portfolio', async (req, res) => {
       } else {
         return res.status(200).json({
           status: "error",
-          message: apiResponse.data?.message || "Failed to convert position",
+          message: apiResponse.data?.message || "No positions to convert",
           details: apiResponse.data || {}
         });
       }
@@ -123,7 +119,6 @@ app.all('/api/angel/portfolio', async (req, res) => {
 
     console.log(`✅ Angel API response for '${action}' fetched successfully`);
 
-    // Unwrap holdings or positions array
     let returnedData = apiResponse.data?.data || [];
 
     if (action === 'holdings' && returnedData.holdings) {
@@ -133,12 +128,16 @@ app.all('/api/angel/portfolio', async (req, res) => {
       returnedData = returnedData.positions;
     }
 
-    // Check for empty or missing data
     if (!Array.isArray(returnedData) || returnedData.length === 0) {
       console.warn(`⚠ No data returned from Angel for action '${action}'. Full response:`, JSON.stringify(apiResponse.data, null, 2));
+
+      let message = "No data found";
+      if (action === "holdings") message = "No holdings found";
+      if (action === "positions") message = "No positions found";
+
       return res.status(200).json({
-        success: false,
-        message: "No data found"
+        status: "error",
+        message
       });
     }
 
@@ -146,7 +145,7 @@ app.all('/api/angel/portfolio', async (req, res) => {
     console.log(`🔍 Sample records for '${action}':`, JSON.stringify(returnedData.slice(0, 3), null, 2));
 
     return res.status(200).json({
-      success: true,
+      status: "success",
       data: returnedData
     });
 
