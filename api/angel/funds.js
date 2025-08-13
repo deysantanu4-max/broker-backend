@@ -57,7 +57,6 @@ function buildAngelHeaders() {
 
 // Mapping from API keys to friendly labels
 const keyMapping = {
-  net: "Net",
   availablecash: "Available Cash",
   availableintradaypayin: "Available Intraday Payin",
   availablelimitmargin: "Available Limit Margin",
@@ -89,6 +88,8 @@ app.get('/api/angel/funds', async (req, res) => {
       { headers }
     );
 
+    console.log(`📬 Raw Angel API funds response: ${JSON.stringify(apiResponse.data, null, 2)}`);
+
     if (!apiResponse.data || !apiResponse.data.data) {
       console.warn('⚠ No funds data returned from Angel API');
       return res.status(200).json({
@@ -101,11 +102,15 @@ app.get('/api/angel/funds', async (req, res) => {
 
     // Transform keys
     const rawData = apiResponse.data.data;
+    console.log(`🔍 Raw keys from Angel: ${Object.keys(rawData).join(', ')}`);
+
     const transformedData = {};
     Object.keys(rawData).forEach(key => {
-      const newKey = keyMapping[key.toLowerCase()] || key; // fallback to original if not mapped
+      const newKey = keyMapping[key.toLowerCase()] || key;
       transformedData[newKey] = rawData[key];
     });
+
+    console.log(`🎯 Transformed keys for frontend: ${Object.keys(transformedData).join(', ')}`);
 
     res.status(200).json({
       status: "success",
