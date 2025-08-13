@@ -26,6 +26,7 @@ let smart_api = new SmartAPI({ api_key: API_KEY });
 let authToken = null;
 let tokenTimestamp = null;
 
+// Login to Angel
 async function angelLogin() {
   const totp = otp.authenticator.generate(TOTP_SECRET);
   const session = await smart_api.generateSession(CLIENT_ID, PASSWORD, totp);
@@ -34,12 +35,14 @@ async function angelLogin() {
   console.log('✅ Angel login successful (portfolio)');
 }
 
+// Check token expiry
 function isTokenExpired() {
   if (!authToken || !tokenTimestamp) return true;
   const hoursSinceLogin = (Date.now() - tokenTimestamp) / (1000 * 60 * 60);
   return hoursSinceLogin > 23;
 }
 
+// Angel API headers
 function buildAngelHeaders() {
   return {
     Authorization: `Bearer ${authToken}`,
@@ -54,6 +57,7 @@ function buildAngelHeaders() {
   };
 }
 
+// API route
 app.all('/api/angel/portfolio', async (req, res) => {
   try {
     console.log(`📩 Incoming portfolio request: Method=${req.method} Body=`, req.body);
@@ -77,14 +81,14 @@ app.all('/api/angel/portfolio', async (req, res) => {
         'https://apiconnect.angelone.in/rest/secure/angelbroking/portfolio/v1/getAllHolding',
         { headers }
       );
-    } 
+    }
     else if (action === 'positions') {
       console.log('📊 Fetching positions...');
       apiResponse = await axios.get(
         'https://apiconnect.angelone.in/rest/secure/angelbroking/order/v1/getPosition',
         { headers }
       );
-    } 
+    }
     else if (action === 'convertPosition') {
       if (req.method !== 'POST') {
         return res.status(405).json({ error: 'Method Not Allowed. Use POST for convertPosition.' });
@@ -106,13 +110,18 @@ app.all('/api/angel/portfolio', async (req, res) => {
           message: apiResponse.data.message || "Position converted successfully"
         });
       } else {
+        // Convert "Position not found" → "No positions to convert"
+        let msg = apiResponse.data?.message || "No positions to convert";
+        if (msg.toLowerCase().includes("position not found")) {
+          msg = "No positions to convert";
+        }
         return res.status(200).json({
           status: "error",
-          message: apiResponse.data?.message || "No positions to convert",
+          message: msg,
           details: apiResponse.data || {}
         });
       }
-    } 
+    }
     else {
       return res.status(400).json({ error: 'Invalid action parameter' });
     }
