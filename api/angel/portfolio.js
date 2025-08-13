@@ -26,7 +26,7 @@ let smart_api = new SmartAPI({ api_key: API_KEY });
 let authToken = null;
 let tokenTimestamp = null;
 
-// Login function (same as historical.js)
+// Login function
 async function angelLogin() {
   const totp = otp.authenticator.generate(TOTP_SECRET);
   const session = await smart_api.generateSession(CLIENT_ID, PASSWORD, totp);
@@ -35,14 +35,14 @@ async function angelLogin() {
   console.log('✅ Angel login successful (portfolio)');
 }
 
-// Token expiry check (Angel JWT usually valid for 24 hrs)
+// Token expiry check
 function isTokenExpired() {
   if (!authToken || !tokenTimestamp) return true;
   const hoursSinceLogin = (Date.now() - tokenTimestamp) / (1000 * 60 * 60);
   return hoursSinceLogin > 23; // refresh before 24 hrs
 }
 
-// Build headers exactly as Angel expects
+// Build headers
 function buildAngelHeaders() {
   return {
     Authorization: `Bearer ${authToken}`,
@@ -98,23 +98,40 @@ app.all('/api/angel/portfolio', async (req, res) => {
         req.body.data || {},
         { headers }
       );
+
+      // Keep Android's current expectation for convertPosition
+      if (apiResponse.data && apiResponse.data.status) {
+        return res.status(200).json({
+          status: "success",
+          message: apiResponse.data.message || "Position converted successfully"
+        });
+      } else {
+        return res.status(200).json({
+          status: "error",
+          message: apiResponse.data?.message || "Failed to convert position"
+        });
+      }
     } 
     else {
       return res.status(400).json({ error: 'Invalid action parameter' });
     }
 
     console.log(`✅ Angel API response for '${action}' fetched successfully`);
-    if (!apiResponse.data || !apiResponse.data.data) {
-  console.warn(`⚠ Angel API returned SUCCESS but no portfolio data for action '${action}'. Full response:`, JSON.stringify(apiResponse.data, null, 2));
-  return res.status(200).json({
-    status: false,
-    message: `No data returned from Angel for action '${action}'`,
-    rawResponse: apiResponse.data
-  });
-}
 
-console.log(`✅ Angel API returned ${Array.isArray(apiResponse.data.data) ? apiResponse.data.data.length : 1} record(s) for action '${action}'.`);
-res.json(apiResponse.data);
+    // Common handling for holdings & positions
+    if (!apiResponse.data || !apiResponse.data.data || (Array.isArray(apiResponse.data.data) && apiResponse.data.data.length === 0)) {
+      console.warn(`⚠ No data returned from Angel for action '${action}'. Full response:`, JSON.stringify(apiResponse.data, null, 2));
+      return res.status(200).json({
+        success: false,
+        message: "No data found"
+      });
+    }
+
+    console.log(`✅ Angel API returned ${Array.isArray(apiResponse.data.data) ? apiResponse.data.data.length : 1} record(s) for action '${action}'.`);
+    return res.status(200).json({
+      success: true,
+      data: apiResponse.data.data
+    });
 
   } catch (error) {
     console.error('❌ Error in /api/angel/portfolio:', error.response?.data || error.message);
