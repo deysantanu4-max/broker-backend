@@ -38,7 +38,7 @@ async function angelLogin() {
 function isTokenExpired() {
   if (!authToken || !tokenTimestamp) return true;
   const hoursSinceLogin = (Date.now() - tokenTimestamp) / (1000 * 60 * 60);
-  return hoursSinceLogin > 23; // refresh before 24 hrs
+  return hoursSinceLogin > 23;
 }
 
 function buildAngelHeaders() {
@@ -53,6 +53,15 @@ function buildAngelHeaders() {
     'X-MACAddress': '00:00:00:00:00:00',
     'X-PrivateKey': API_KEY,
   };
+}
+
+// Helper: format key names
+function formatKeyName(key) {
+  return key
+    .replace(/([a-z])([A-Z])/g, '$1 $2') // Split camelCase
+    .replace(/_/g, ' ') // Replace underscores
+    .toLowerCase()
+    .replace(/\b\w/g, (char) => char.toUpperCase()); // Capitalize each word
 }
 
 app.get('/api/angel/funds', async (req, res) => {
@@ -80,9 +89,17 @@ app.get('/api/angel/funds', async (req, res) => {
     }
 
     console.log(`✅ Funds data retrieved successfully`);
+
+    // Transform keys
+    const originalData = apiResponse.data.data;
+    const transformedData = {};
+    for (const key in originalData) {
+      transformedData[formatKeyName(key)] = originalData[key];
+    }
+
     res.status(200).json({
       status: "success",
-      data: apiResponse.data.data
+      data: transformedData
     });
 
   } catch (error) {
