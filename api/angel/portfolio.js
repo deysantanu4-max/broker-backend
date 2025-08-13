@@ -99,7 +99,6 @@ app.all('/api/angel/portfolio', async (req, res) => {
         { headers }
       );
 
-      // Keep Android's current expectation for convertPosition
       if (apiResponse.data && apiResponse.data.status) {
         return res.status(200).json({
           status: "success",
@@ -138,6 +137,10 @@ app.all('/api/angel/portfolio', async (req, res) => {
     }
 
     console.log(`✅ Angel API returned ${returnedData.length} record(s) for action '${action}'.`);
+
+    // Debug log first 3 records for inspection
+    console.log(`🔍 Sample records for '${action}':`, JSON.stringify(returnedData.slice(0, 3), null, 2));
+
     return res.status(200).json({
       success: true,
       data: returnedData
