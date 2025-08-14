@@ -111,9 +111,10 @@ app.post('/api/angel/historical', async (req, res) => {
 
     console.log(`✅ Historical data fetched for ${symbolWithEq}`);
 
-    // 🔹 Auto-start Live Stream
+    // 🔹 Auto-start Live Stream - call internal API
     try {
-      await axios.post(`${process.env.BACKEND_BASE_URL}/api/angel/live/stream`, {
+      const baseUrl = `${req.protocol}://${req.get('host')}`;
+      await axios.post(`${baseUrl}/api/angel/live/stream`, {
         clientCode,
         feedToken,
         tokens: [symbolToken]
