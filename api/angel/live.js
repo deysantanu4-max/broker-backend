@@ -4,10 +4,29 @@ import crypto from "crypto";
 import os from "os";
 import https from "https";
 
+// Convert Base32 to Buffer (Google Authenticator style)
+function base32ToBuffer(base32) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let bits = "";
+  let buffer = [];
+
+  base32 = base32.replace(/=+$/, "").toUpperCase();
+  for (let char of base32) {
+    const val = alphabet.indexOf(char);
+    if (val === -1) throw new Error("Invalid base32 character.");
+    bits += val.toString(2).padStart(5, "0");
+  }
+  for (let i = 0; i + 8 <= bits.length; i += 8) {
+    buffer.push(parseInt(bits.substring(i, i + 8), 2));
+  }
+  return Buffer.from(buffer);
+}
+
+// Generate TOTP using Base32 secret
 function generateTOTP(secret) {
   const epoch = Math.floor(Date.now() / 1000);
   const time = Math.floor(epoch / 30);
-  const key = Buffer.from(secret, "base64");
+  const key = base32ToBuffer(secret); // ✅ Fixed to use Base32 decode
   const buffer = Buffer.alloc(8);
   buffer.writeUInt32BE(0, 0);
   buffer.writeUInt32BE(time, 4);
@@ -42,6 +61,8 @@ export default async function handler(req, res) {
       password: password,
       totp: generateTOTP(totpSecret)
     };
+
+    console.log(`📟 Generated TOTP: ${payload.totp}`); // Debugging OTP
 
     const headers = {
       "X-PrivateKey": apiKey,
