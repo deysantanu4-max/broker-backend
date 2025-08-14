@@ -24,7 +24,6 @@ if (!CLIENT_ID || !API_KEY) {
 
 let scripMasterCache = null;
 
-// ✅ Map incoming exchange strings to Angel constants
 const exchangeMap = {
   NSE: 'NSE',
   BSE: 'BSE',
@@ -34,7 +33,7 @@ const exchangeMap = {
   CDS: 'CDS'
 };
 
-// ✅ Load ScripMaster: try local first, fallback to Angel API if exchange missing
+// Load ScripMaster: try local first, fallback to Angel API if exchange missing
 async function loadScripMaster(exchange) {
   try {
     if (!scripMasterCache) {
@@ -56,7 +55,7 @@ async function loadScripMaster(exchange) {
     console.warn('⚠️ Failed to load local ScripMaster:', err.message);
   }
 
-  // 2️⃣ Fallback: Fetch from Angel API
+  // Fallback: Fetch from Angel API
   const res = await axios.get('https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json');
   scripMasterCache = res.data;
   console.log(`✅ Loaded ${scripMasterCache.length} instruments from Angel API (includes ${exchange})`);
@@ -72,31 +71,36 @@ app.post('/api/angel/historical', async (req, res) => {
   }
 
   try {
-    // ✅ Normalize exchange
+    // Normalize exchange
     exchange = exchangeMap[exchange.toUpperCase()] || 'NSE';
 
-    // ✅ Get tokens from shared login
+    // Get tokens from shared login
     const { authToken, feedToken } = await getAngelTokens();
 
     const scripMaster = await loadScripMaster(exchange);
 
-    // ✅ Always add "-EQ" for equity symbols if missing
     symbol = symbol.toUpperCase();
-    const symbolWithEq = symbol.endsWith('-EQ') ? symbol : `${symbol}-EQ`;
 
-    console.log(`🔍 Searching token for: ${symbolWithEq} @ ${exchange}`);
+    console.log(`🔍 Searching token for: ${symbol} @ ${exchange}`);
 
+    // ✅ Modified search to support BSE & NSE dynamically
     const instrument = scripMaster.find(inst =>
-      inst.symbol.toUpperCase() === symbolWithEq &&
-      inst.exch_seg.toUpperCase() === exchange
+      inst.exch_seg.toUpperCase() === exchange &&
+      (
+        inst.symbol.toUpperCase() === symbol ||
+        inst.symbol.toUpperCase() === `${symbol}-EQ` || // auto append -EQ if missing
+        (inst.name && inst.name.toUpperCase().includes(symbol))
+      )
     );
 
     if (!instrument) {
-      console.error(`❌ Symbol '${symbolWithEq}' not found in exchange ${exchange}`);
-      return res.status(404).json({ error: `Symbol '${symbolWithEq}' not found on ${exchange}` });
+      console.error(`❌ Symbol '${symbol}' not found in exchange ${exchange}`);
+      return res.status(404).json({ error: `Symbol '${symbol}' not found on ${exchange}` });
     }
 
     const symbolToken = instrument.token;
+    const symbolWithEq = instrument.symbol.endsWith('-EQ') ? instrument.symbol : `${instrument.symbol}-EQ`;
+
     console.log(`✅ Found symbol token: ${symbolToken}`);
 
     // Prepare date range (last 30 days)
@@ -139,7 +143,7 @@ app.post('/api/angel/historical', async (req, res) => {
 
     console.log(`✅ Candle data fetched for ${symbolWithEq}`);
 
-    // ✅ Return candles AND live feed creds in one call
+    // Return candles AND live feed creds in one call
     res.json({
       symbol: symbolWithEq,
       token: symbolToken,
