@@ -12,12 +12,10 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ Load env variables
 const CLIENT_ID   = process.env.ANGEL_CLIENT_ID;
 const PASSWORD    = process.env.ANGEL_PASSWORD;
 const API_KEY     = process.env.ANGEL_API_KEY;
 const TOTP_SECRET = process.env.ANGEL_TOTP_SECRET;
-const BACKEND_BASE_URL = process.env.BACKEND_BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
 
 if (!CLIENT_ID || !PASSWORD || !API_KEY || !TOTP_SECRET) {
   console.error('❌ Missing required env vars: ANGEL_CLIENT_ID, ANGEL_PASSWORD, ANGEL_API_KEY, ANGEL_TOTP_SECRET');
@@ -28,7 +26,6 @@ let scripMasterCache = null;
 let authToken = null;
 let feedToken = null;
 
-// 🔹 Login to Angel
 async function angelLogin() {
   console.log('[login] 🔐 Generating TOTP & logging in to Angel...');
   const totp = otp.authenticator.generate(TOTP_SECRET);
@@ -44,7 +41,6 @@ async function angelLogin() {
   console.log('[login] ✅ Angel login successful');
 }
 
-// 🔹 Load scrip master
 async function loadScripMaster() {
   if (scripMasterCache) {
     console.log(`[scrip] ♻️ Using cached scrip master (${scripMasterCache.length} instruments)`);
@@ -57,7 +53,17 @@ async function loadScripMaster() {
   return scripMasterCache;
 }
 
-// 🔹 POST /api/angel/historical
+function buildBaseUrlFromReq(req) {
+  // Prefer explicit env, else infer from headers
+  if (process.env.BACKEND_BASE_URL) return process.env.BACKEND_BASE_URL.replace(/\/+$/, '');
+  const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'https').toString().split(',')[0];
+  const host  = req.headers['x-forwarded-host'] || req.get('host');
+  const base  = `${proto}://${host}`;
+  console.log(`[baseurl] 🌐 Inferred BACKEND_BASE_URL = ${base}`);
+  return base;
+}
+
+// POST /api/angel/historical
 app.post('/api/angel/historical', async (req, res) => {
   console.log('[hist] 📩 Incoming request:', req.body);
 
@@ -78,8 +84,8 @@ app.post('/api/angel/historical', async (req, res) => {
 
     symbol   = String(symbol).trim().toUpperCase();
     exchange = String(exchange).trim().toUpperCase();
-    const symbolWithEq = symbol.endsWith('-EQ') ? symbol : `${symbol}-EQ`;
 
+    const symbolWithEq = symbol.endsWith('-EQ') ? symbol : `${symbol}-EQ`;
     console.log(`[hist] 🔍 Searching in scrip master: symbol=${symbolWithEq}, exchange=${exchange}`);
 
     const instrument = scripMaster.find(inst =>
@@ -92,18 +98,20 @@ app.post('/api/angel/historical', async (req, res) => {
         .filter(inst => inst.exch_seg?.toUpperCase() === exchange && inst.symbol?.toUpperCase()?.includes(symbol))
         .slice(0, 10)
         .map(i => i.symbol);
-      console.log(`[hist] ❌ Symbol '${symbolWithEq}' not found. Close matches:`, closeMatches);
+      console.log(`[hist] ❌ Symbol '${symbolWithEq}' not found on exchange '${exchange}'. Close matches:`, closeMatches);
       return res.status(404).json({ error: `Symbol '${symbolWithEq}' not found for exchange '${exchange}'` });
     }
 
     const symbolToken = String(instrument.token);
     console.log(`[hist] ✅ Found symbol token: ${symbolToken} for ${symbolWithEq}`);
 
-    // Date range - last 30 days
+    // Prepare date range (last 30 days)
     const now = new Date();
     const fromDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
     const pad = (n) => n.toString().padStart(2, '0');
-    const formatDate = (d) => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const formatDate = (date) =>
+      `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 
     console.log(`[hist] ⏳ Fetching candle data from ${formatDate(fromDate)} to ${formatDate(now)}...`);
 
@@ -126,40 +134,82 @@ app.post('/api/angel/historical', async (req, res) => {
           'X-ClientPublicIP': '127.0.0.1',
           'X-MACAddress': '00:00:00:00:00:00',
           'Content-Type': 'application/json',
-        }
+          Accept: 'application/json',
+        },
+        validateStatus: () => true
       }
     );
 
     if (!candleRes?.data?.data) {
-      return res.status(500).json({ error: 'No historical data found' });
+      console.error('[hist] ❌ No data in response from Angel API', {
+        status: candleRes?.status,
+        statusText: candleRes?.statusText,
+        data: candleRes?.data
+      });
+      return res.status(500).json({ error: 'No data in response from Angel API' });
+    }
+
+    if (candleRes.status >= 400) {
+      console.error(`[hist] ❌ Historical API returned ${candleRes.status}`, candleRes.data);
+      return res.status(500).json({ error: 'Angel historical API error', details: candleRes.data });
     }
 
     console.log(`[hist] ✅ Successfully fetched candle data for ${symbolWithEq} (rows=${candleRes.data.data.length})`);
 
-    // 🔹 Always call backend's own live route
-    const streamUrl = `${BACKEND_BASE_URL}/api/angel/live/stream`;
-    console.log('[hist] 📡 Starting live stream via backend:', { streamUrl, clientCode, token: symbolToken });
+    // Auto-start live stream via local live.js
+    const baseUrl   = buildBaseUrlFromReq(req);
+    const streamUrl = `${baseUrl}/api/angel/live/stream`;
 
-    const startRes = await axios.post(
+    console.log('[hist] 📡 Starting live stream...', {
       streamUrl,
-      { clientCode, feedToken, tokens: [symbolToken], exchange },
-      { headers: { Authorization: `Bearer ${authToken}`, 'Content-Type': 'application/json' } }
-    );
+      clientCode,
+      feedTokenPresent: !!feedToken,
+      token: symbolToken
+    });
 
-    if (startRes.status >= 400) {
-      console.error('[hist] ⚠️ Live stream start failed', startRes.data);
-    } else {
-      console.log('[hist] 📡 Live stream started OK');
+    try {
+      const startRes = await axios.post(
+        streamUrl,
+        { clientCode, feedToken, tokens: [symbolToken], exchange },
+        {
+          headers: {
+            // live.js does not validate this; provided for traceability
+            Authorization: `Bearer ${authToken}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 15000,
+          validateStatus: () => true
+        }
+      );
+
+      if (startRes.status >= 400) {
+        console.error('[hist] ⚠️ Live stream start failed', {
+          status: startRes.status,
+          statusText: startRes.statusText,
+          data: startRes.data
+        });
+      } else {
+        console.log('[hist] 📡 Live stream started OK:', startRes.data);
+      }
+    } catch (streamErr) {
+      console.error('[hist] ⚠️ Exception while starting live stream:', streamErr?.response?.data || streamErr.message);
     }
 
+    // Final payload back to app (includes tokens needed for frontend live polling)
     return res.json({
       status: 'success',
-      meta: { feedToken, symbolToken, exchange, symbol: symbolWithEq, clientCode },
+      meta: {
+        feedToken,
+        symbolToken,
+        exchange,
+        symbol: symbolWithEq,
+        clientCode
+      },
       data: candleRes.data.data
     });
 
-  } catch (err) {
-    console.error('[hist] ❌ Error:', err?.response?.data || err.message);
+  } catch (error) {
+    console.error('[hist] ❌ Failed to fetch data:', error?.response?.data || error.message || error);
     return res.status(500).json({ error: 'Failed to fetch data' });
   }
 });
