@@ -1,4 +1,5 @@
-import fetch from 'node-fetch';
+// No need to import fetch in Node 18+
+// import fetch from 'node-fetch';
 
 export default async function handler(req, res) {
   console.log("📩 Incoming request to /api/angel/live");
@@ -36,14 +37,14 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         clientcode: clientId,
         password: password,
-        totp: generateTOTP(totpSecret) // We’ll define this below
+        totp: generateTOTP(totpSecret)
       })
     });
 
     const loginData = await loginResp.json();
     console.log("Login response:", loginData);
 
-    if (!loginData.data || !loginData.data.fundoid) {
+    if (!loginData.data || !loginData.data.feedToken) {
       return res.status(500).json({ error: "Login failed", details: loginData });
     }
 
