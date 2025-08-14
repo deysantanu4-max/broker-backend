@@ -29,7 +29,7 @@ let scripMasterCache = null;
 let authToken = null;
 let feedToken = null;
 
-// ✅ Load scrip master from local file
+// ✅ Load ScripMaster from local file instead of network
 async function loadScripMaster() {
   if (scripMasterCache) return scripMasterCache;
 
@@ -47,7 +47,7 @@ async function loadScripMaster() {
   }
 }
 
-// ✅ Login to AngelOne SmartAPI
+// ✅ AngelOne login (unchanged from your existing method)
 async function angelLogin() {
   const smart_api = new SmartAPI({ api_key: API_KEY });
   const totpCode = otp.authenticator.generate(TOTP_SECRET);
@@ -69,10 +69,8 @@ app.post('/api/angel/historical', async (req, res) => {
   }
 
   try {
-    // Ensure logged in
-    if (!feedToken || !authToken) {
-      await angelLogin();
-    }
+    // Always login before fetching data (unchanged)
+    await angelLogin();
 
     const scripMaster = await loadScripMaster();
 
