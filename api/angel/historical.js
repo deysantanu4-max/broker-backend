@@ -6,6 +6,9 @@ import dotenv from 'dotenv';
 import otp from 'otplib';
 import cors from 'cors';
 
+// Import the start function from live.js
+import { startLiveStreamInternal } from './live.js';
+
 dotenv.config();
 
 const app = express();
@@ -53,16 +56,7 @@ async function loadScripMaster() {
   return scripMasterCache;
 }
 
-function buildBaseUrlFromReq(req) {
-  if (process.env.BACKEND_BASE_URL) return process.env.BACKEND_BASE_URL.replace(/\/+$/, '');
-  const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'https').toString().split(',')[0];
-  const host  = req.headers['x-forwarded-host'] || req.get('host');
-  const base  = `${proto}://${host}`;
-  console.log(`[baseurl] 🌐 Inferred BACKEND_BASE_URL = ${base}`);
-  return base;
-}
-
-// POST /  (mounted at /api/angel/historical in server.js)
+// POST /  (mounted at /api/angel/historical)
 app.post('/', async (req, res) => {
   console.log('[hist] 📩 Incoming request:', req.body);
 
@@ -154,43 +148,21 @@ app.post('/', async (req, res) => {
 
     console.log(`[hist] ✅ Successfully fetched candle data for ${symbolWithEq} (rows=${candleRes.data.data.length})`);
 
-    const baseUrl   = buildBaseUrlFromReq(req);
-    const streamUrl = `${baseUrl}/api/angel/live/stream`;
-
-    console.log('[hist] 📡 Starting live stream...', {
-      streamUrl,
+    // ✅ Directly start live stream without HTTP request
+    console.log('[hist] 📡 Starting live stream internally...', {
       clientCode,
       feedTokenPresent: !!feedToken,
       token: symbolToken
     });
 
     try {
-      const startRes = await axios.post(
-        streamUrl,
-        { clientCode, feedToken, tokens: [symbolToken], exchange },
-        {
-          headers: {
-            Authorization: `Bearer ${authToken}`,
-            'Content-Type': 'application/json'
-          },
-          timeout: 15000,
-          validateStatus: () => true
-        }
-      );
-
-      if (startRes.status >= 400) {
-        console.error('[hist] ⚠️ Live stream start failed', {
-          status: startRes.status,
-          statusText: startRes.statusText,
-          data: startRes.data
-        });
-      } else {
-        console.log('[hist] 📡 Live stream started OK:', startRes.data);
-      }
+      startLiveStreamInternal({ clientCode, feedToken, tokens: [symbolToken], exchange });
+      console.log('[hist] 📡 Live stream started OK (internal call)');
     } catch (streamErr) {
-      console.error('[hist] ⚠️ Exception while starting live stream:', streamErr?.response?.data || streamErr.message);
+      console.error('[hist] ⚠️ Exception while starting live stream internally:', streamErr.message);
     }
 
+    // Final payload back to app
     return res.json({
       status: 'success',
       meta: {

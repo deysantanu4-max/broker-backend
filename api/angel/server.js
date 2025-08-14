@@ -5,7 +5,7 @@ import liveRouter from './live.js';
 const app = express();
 app.use(express.json());
 
-// Debug logging for all requests
+// Debug logging
 app.use((req, res, next) => {
   console.log(`[server] ${req.method} ${req.originalUrl}`);
   next();
@@ -20,7 +20,7 @@ app.use('/api/angel/live', (req, res, next) => {
   next();
 }, liveRouter);
 
-// Local mode: listen on a port
+// Local dev server
 if (process.env.VERCEL !== '1') {
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
@@ -28,5 +28,4 @@ if (process.env.VERCEL !== '1') {
   });
 }
 
-// Always export for Vercel
 export default app;
