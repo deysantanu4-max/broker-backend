@@ -21,7 +21,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const apiKey = process.env.ANGEL_MARKET_DATA_API_KEY;
+    const apiKey = process.env.ANGEL_API_KEY;
     const clientId = process.env.ANGEL_CLIENT_ID;
     const password = process.env.ANGEL_PASSWORD;
     const totpSecret = process.env.ANGEL_TOTP_SECRET;
