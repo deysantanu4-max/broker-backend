@@ -29,25 +29,34 @@ let scripMasterCache = null;
 let authToken = null;
 let feedToken = null;
 
-// ✅ Load ScripMaster from local file instead of network
-async function loadScripMaster() {
+// ✅ Load ScripMaster: try local first, fallback to Angel API if exchange missing
+async function loadScripMaster(exchange) {
+  // If already loaded in memory, return it
   if (scripMasterCache) return scripMasterCache;
 
-  console.log('📥 Loading local scrip master JSON...');
-  const scripMasterPath = path.join(process.cwd(), 'api', 'angel', 'OpenAPIScripMaster.json');
-
+  // 1️⃣ Try local JSON
   try {
+    console.log('📥 Loading local scrip master JSON...');
+    const scripMasterPath = path.join(process.cwd(), 'api', 'angel', 'OpenAPIScripMaster.json');
     const rawData = fs.readFileSync(scripMasterPath, 'utf8');
     scripMasterCache = JSON.parse(rawData);
     console.log(`✅ Loaded ${scripMasterCache.length} instruments from local file`);
-    return scripMasterCache;
+
+    const hasExchange = scripMasterCache.some(inst => inst.exch_seg.toUpperCase() === exchange);
+    if (hasExchange) return scripMasterCache;
   } catch (err) {
-    console.error('❌ Failed to load local scrip master:', err.message);
-    throw new Error('Cannot load ScripMaster JSON from disk');
+    console.warn('⚠️ Local scrip master not found or unreadable:', err.message);
   }
+
+  // 2️⃣ Fallback: Fetch from Angel API
+  console.log('🌐 Fetching scrip master from Angel API...');
+  const res = await axios.get('https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json');
+  scripMasterCache = res.data;
+  console.log(`✅ Loaded ${scripMasterCache.length} instruments from Angel API`);
+  return scripMasterCache;
 }
 
-// ✅ AngelOne login (unchanged from your existing method)
+// ✅ AngelOne login (unchanged from your working method)
 async function angelLogin() {
   const smart_api = new SmartAPI({ api_key: API_KEY });
   const totpCode = otp.authenticator.generate(TOTP_SECRET);
@@ -69,10 +78,10 @@ app.post('/api/angel/historical', async (req, res) => {
   }
 
   try {
-    // Always login before fetching data (unchanged)
+    // Always login before fetching data (keep your method)
     await angelLogin();
 
-    const scripMaster = await loadScripMaster();
+    const scripMaster = await loadScripMaster(exchange);
 
     // Normalize symbol
     symbol = symbol.toUpperCase();
