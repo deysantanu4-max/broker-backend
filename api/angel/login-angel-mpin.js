@@ -1,66 +1,85 @@
-import axios from "axios";
+// api/angel/login-angel-mpin.js
 
-export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    console.log(`Invalid method: ${req.method}`);
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+import express from 'express';
+import { SmartAPI } from 'smartapi-javascript';
+import dotenv from 'dotenv';
+import otp from 'otplib';
+import cors from 'cors';
 
-  const CLIENT_SECRET = process.env.ANGEL_API_KEY; // Your API key
-  const ANGEL_API_BASE = "https://apiconnect.angelone.in";
+dotenv.config();
 
-  const { clientcode, password, totp, state } = req.body;
+const app = express();
+app.use(cors());
+app.use(express.json());
 
-  console.log("Login attempt with body:", req.body);
-  console.log("Using client IP:", req.headers['x-forwarded-for'] || req.connection.remoteAddress || "127.0.0.1");
+const CLIENT_ID = process.env.ANGEL_CLIENT_ID;
+const PASSWORD = process.env.ANGEL_PASSWORD;
+const API_KEY = process.env.ANGEL_API_KEY;
+const TOTP_SECRET = process.env.ANGEL_TOTP_SECRET;
 
-  if (!clientcode || !password) {
-    console.log("Missing clientcode or password");
-    return res.status(400).json({ error: "Missing clientcode or password" });
-  }
+if (!CLIENT_ID || !PASSWORD || !API_KEY || !TOTP_SECRET) {
+  console.error('❌ Missing required env vars: ANGEL_CLIENT_ID, ANGEL_PASSWORD, ANGEL_API_KEY, ANGEL_TOTP_SECRET');
+}
 
-  const payload = {
-    clientcode,
-    password,
-    state: state || "some-state"
-  };
+// 🗂 Cache variables (shared across requests)
+let cachedAuthToken = null;
+let cachedFeedToken = null;
+let lastLoginDate = null;
 
-  if (totp && totp.trim() !== "") {
-    payload.totp = totp;
-  }
+// ✅ Helper: check if token is still valid for today
+function isTokenValid() {
+  const today = new Date().toISOString().split('T')[0];
+  return cachedAuthToken && cachedFeedToken && lastLoginDate === today;
+}
 
+// ✅ Login function
+async function loginToAngel() {
+  const smart_api = new SmartAPI({ api_key: API_KEY });
+  const totpCode = otp.authenticator.generate(TOTP_SECRET);
+
+  console.log("🔑 Performing full login to AngelOne...");
+  const session = await smart_api.generateSession(CLIENT_ID, PASSWORD, totpCode);
+
+  cachedAuthToken = session.data.jwtToken;
+  cachedFeedToken = session.data.feedToken;
+  lastLoginDate = new Date().toISOString().split('T')[0];
+
+  console.log("✅ Login successful — tokens cached for today");
+  return { authToken: cachedAuthToken, feedToken: cachedFeedToken };
+}
+
+app.get('/api/angel/login', async (req, res) => {
   try {
-    const response = await axios({
-      method: 'post',
-      url: `${ANGEL_API_BASE}/rest/auth/angelbroking/user/v1/loginByPassword`,
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'X-UserType': 'USER',
-        'X-SourceID': 'WEB',
-        'X-ClientLocalIP': req.headers['x-forwarded-for'] || req.connection.remoteAddress || "127.0.0.1",
-        'X-ClientPublicIP': req.headers['x-forwarded-for'] || req.connection.remoteAddress || "127.0.0.1",
-        'X-MACAddress': '00:00:00:00:00:00',
-        'X-PrivateKey': CLIENT_SECRET,
-      },
-      data: JSON.stringify(payload),
-      validateStatus: () => true, // Don't throw on non-2xx status codes
-    });
-
-    console.log("Angel API response status:", response.status);
-    console.log("Angel API response data:", JSON.stringify(response.data));
-
-    const token = response.data?.data?.jwtToken;
-
-    if (!token) {
-      console.log("No access token received in response", response.data);
-      return res.status(401).json({ error: "Login failed: No access token received", details: response.data });
+    if (isTokenValid()) {
+      console.log("⚡ Using cached AngelOne tokens");
+      return res.json({
+        clientCode: CLIENT_ID,
+        apiKey: API_KEY,
+        authToken: cachedAuthToken,
+        feedToken: cachedFeedToken
+      });
     }
 
-    // Return full response data so client sees { data: { jwtToken: ... } }
-    return res.status(200).json(response.data);
+    const { authToken, feedToken } = await loginToAngel();
+    res.json({
+      clientCode: CLIENT_ID,
+      apiKey: API_KEY,
+      authToken,
+      feedToken
+    });
   } catch (error) {
-    console.error("Login error:", error.response?.data || error.message || error);
-    return res.status(500).json({ error: "Internal server error", details: error.message || error });
+    console.error("❌ Angel login error:", error.message || error);
+    res.status(500).json({ error: error.message || 'Login failed' });
   }
+});
+
+export default app;
+
+// ✅ Export reusable login for other modules (historical.js, live.js)
+export async function getAngelTokens() {
+  if (isTokenValid()) {
+    console.log("⚡ Using cached AngelOne tokens (from getAngelTokens)");
+    return { authToken: cachedAuthToken, feedToken: cachedFeedToken };
+  }
+  return await loginToAngel();
 }
