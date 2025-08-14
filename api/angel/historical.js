@@ -29,7 +29,7 @@ let feedToken = null;
 
 async function loadScripMaster() {
   if (scripMasterCache) return scripMasterCache;
-  console.log('📥 Fetching scrip master JSON from Angel public URL...');
+  console.log('📥 Fetching scrip master JSON...');
   const res = await axios.get('https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json');
   scripMasterCache = res.data;
   console.log(`✅ Loaded ${scripMasterCache.length} instruments`);
@@ -39,20 +39,17 @@ async function loadScripMaster() {
 async function angelLogin() {
   const totp = otp.authenticator.generate(TOTP_SECRET);
   const session = await smart_api.generateSession(CLIENT_ID, PASSWORD, totp);
-
   authToken = session.data.jwtToken;
   feedToken = session.data.feedToken;
-
   console.log('✅ Angel login successful');
 }
 
 app.post('/api/angel/historical', async (req, res) => {
-  console.log("📩 Incoming request body:", req.body);
+  console.log("📩 Incoming request:", req.body);
 
-  let { symbol, exchange } = req.body;
-
-  if (!symbol || !exchange) {
-    return res.status(400).json({ error: 'Missing required fields' });
+  let { symbol, exchange, clientCode } = req.body;
+  if (!symbol || !exchange || !clientCode) {
+    return res.status(400).json({ error: 'Missing required fields (symbol, exchange, clientCode)' });
   }
 
   try {
@@ -62,13 +59,9 @@ app.post('/api/angel/historical', async (req, res) => {
 
     const scripMaster = await loadScripMaster();
 
-    // Normalize inputs
     symbol = symbol.toUpperCase();
     exchange = exchange.toUpperCase();
-
-    // Append '-EQ' suffix if not present
     const symbolWithEq = symbol.endsWith('-EQ') ? symbol : `${symbol}-EQ`;
-    console.log(`🔍 Searching for symbol: ${symbolWithEq}, exchange: ${exchange}`);
 
     const instrument = scripMaster.find(inst =>
       inst.symbol.toUpperCase() === symbolWithEq && inst.exch_seg.toUpperCase() === exchange
@@ -78,22 +71,19 @@ app.post('/api/angel/historical', async (req, res) => {
       const closeMatches = scripMaster.filter(inst =>
         inst.symbol.toUpperCase().includes(symbol) && inst.exch_seg.toUpperCase() === exchange
       );
-      console.log(`❌ Symbol '${symbolWithEq}' not found. Close matches:`, closeMatches.slice(0, 10).map(i => i.symbol));
+      console.log(`❌ Symbol not found. Matches:`, closeMatches.slice(0, 5).map(i => i.symbol));
       return res.status(404).json({ error: `Symbol '${symbolWithEq}' not found` });
     }
 
     const symbolToken = instrument.token;
-    console.log(`✅ Found symbol token: ${symbolToken} for ${symbolWithEq}`);
+    console.log(`✅ Found token: ${symbolToken}`);
 
-    // Prepare date range
+    // Historical data fetch
     const now = new Date();
     const fromDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-
     const pad = (n) => n.toString().padStart(2, '0');
     const formatDate = (date) =>
       `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-
-    console.log(`⏳ Fetching candle data from ${formatDate(fromDate)} to ${formatDate(now)}...`);
 
     const candleRes = await axios.post(
       'https://apiconnect.angelone.in/rest/secure/angelbroking/historical/v1/getCandleData',
@@ -110,23 +100,32 @@ app.post('/api/angel/historical', async (req, res) => {
           'X-PrivateKey': API_KEY,
           'X-UserType': 'USER',
           'X-SourceID': 'WEB',
-          'X-ClientLocalIP': '127.0.0.1',
-          'X-ClientPublicIP': '127.0.0.1',
-          'X-MACAddress': '00:00:00:00:00:00',
           'Content-Type': 'application/json',
-          Accept: 'application/json',
         },
       }
     );
 
     if (!candleRes.data || !candleRes.data.data) {
-      console.error('❌ No data in response from Angel API');
-      return res.status(500).json({ error: 'No data from Angel API' });
+      return res.status(500).json({ error: 'No historical data found' });
     }
 
-    console.log(`✅ Successfully fetched candle data for ${symbolWithEq}`);
+    console.log(`✅ Historical data fetched for ${symbolWithEq}`);
 
-    // 🔹 Modified response: include feedToken & symbolToken
+    // 🔹 Auto-start Live Stream
+    try {
+      await axios.post(`${process.env.BACKEND_BASE_URL}/api/angel/live/stream`, {
+        clientCode,
+        feedToken,
+        tokens: [symbolToken]
+      }, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      console.log(`📡 Live stream started for ${symbolWithEq}`);
+    } catch (streamErr) {
+      console.error(`⚠️ Failed to start live stream:`, streamErr.message);
+    }
+
+    // Final Response
     res.json({
       status: "success",
       meta: {
@@ -139,7 +138,7 @@ app.post('/api/angel/historical', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Failed to fetch data:', error.response?.data || error.message || error);
+    console.error('❌ Error:', error.response?.data || error.message);
     res.status(500).json({ error: 'Failed to fetch data' });
   }
 });
