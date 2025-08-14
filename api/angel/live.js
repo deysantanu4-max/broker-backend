@@ -157,15 +157,19 @@ router.post('/stream', async (req, res) => {
 });
 
 // GET /angel/live/prices
+// GET /angel/live/prices
 router.get('/prices', (req, res) => {
   const clientCode = CLIENT_ID;
   const user = userData.get(clientCode);
+
   if (!user) {
     console.warn(`[PRICES] No active stream for ${clientCode}`);
-    return res.status(404).json({ error: 'No active stream for this client' });
+    // Always return 200 OK with empty JSON object instead of 404 HTML
+    return res.json({});
   }
+
   console.log(`[PRICES] Sending ${Object.keys(user.liveData).length} instruments`);
-  res.json(user.liveData);
+  res.json(user.liveData || {});
 });
 
 export default router;
