@@ -54,7 +54,6 @@ async function loadScripMaster() {
 }
 
 function buildBaseUrlFromReq(req) {
-  // Prefer explicit env, else infer from headers
   if (process.env.BACKEND_BASE_URL) return process.env.BACKEND_BASE_URL.replace(/\/+$/, '');
   const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'https').toString().split(',')[0];
   const host  = req.headers['x-forwarded-host'] || req.get('host');
@@ -63,8 +62,8 @@ function buildBaseUrlFromReq(req) {
   return base;
 }
 
-// POST /api/angel/historical
-app.post('/api/angel/historical', async (req, res) => {
+// POST /  (mounted at /api/angel/historical in server.js)
+app.post('/', async (req, res) => {
   console.log('[hist] 📩 Incoming request:', req.body);
 
   let { symbol, exchange, clientCode } = req.body || {};
@@ -105,7 +104,6 @@ app.post('/api/angel/historical', async (req, res) => {
     const symbolToken = String(instrument.token);
     console.log(`[hist] ✅ Found symbol token: ${symbolToken} for ${symbolWithEq}`);
 
-    // Prepare date range (last 30 days)
     const now = new Date();
     const fromDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
@@ -156,7 +154,6 @@ app.post('/api/angel/historical', async (req, res) => {
 
     console.log(`[hist] ✅ Successfully fetched candle data for ${symbolWithEq} (rows=${candleRes.data.data.length})`);
 
-    // Auto-start live stream via local live.js
     const baseUrl   = buildBaseUrlFromReq(req);
     const streamUrl = `${baseUrl}/api/angel/live/stream`;
 
@@ -173,7 +170,6 @@ app.post('/api/angel/historical', async (req, res) => {
         { clientCode, feedToken, tokens: [symbolToken], exchange },
         {
           headers: {
-            // live.js does not validate this; provided for traceability
             Authorization: `Bearer ${authToken}`,
             'Content-Type': 'application/json'
           },
@@ -195,7 +191,6 @@ app.post('/api/angel/historical', async (req, res) => {
       console.error('[hist] ⚠️ Exception while starting live stream:', streamErr?.response?.data || streamErr.message);
     }
 
-    // Final payload back to app (includes tokens needed for frontend live polling)
     return res.json({
       status: 'success',
       meta: {

@@ -9,7 +9,6 @@ if (!API_KEY) {
   console.error('❌ Missing API key in env (ANGEL_API_KEY)');
 }
 
-// clientCode -> { socket, liveData: {}, hbTimer }
 const userData = new Map();
 
 function generateCorrelationId() {
@@ -22,13 +21,12 @@ function generateCorrelationId() {
 function getExchangeType(exchange) {
   const ex = String(exchange || '').toUpperCase();
   if (ex === 'BSE') return 2;
-  // Default NSE
   return 1;
 }
 
-// POST /api/angel/live/stream
-router.post('/api/angel/live/stream', (req, res) => {
-  console.log('[live] [REQ] POST /api/angel/live/stream body:', req.body);
+// POST /stream  (mounted at /api/angel/live in server.js)
+router.post('/stream', (req, res) => {
+  console.log('[live] [REQ] POST /stream body:', req.body);
 
   const { clientCode, feedToken, tokens, exchange } = req.body || {};
 
@@ -40,7 +38,6 @@ router.post('/api/angel/live/stream', (req, res) => {
   const cleanTokens = tokens.map(t => String(t)).filter(Boolean);
   const exchangeType = getExchangeType(exchange);
 
-  // If an old socket exists, close it first
   if (userData.has(clientCode)) {
     console.log(`[live] [INFO] Closing existing WebSocket for ${clientCode}`);
     const existing = userData.get(clientCode);
@@ -60,9 +57,9 @@ router.post('/api/angel/live/stream', (req, res) => {
 
     const subscriptionReq = {
       correlationID: generateCorrelationId(),
-      action: 1, // subscribe
+      action: 1,
       params: {
-        mode: 1, // 1 = LTP mode (as per Angel SmartStream)
+        mode: 1,
         tokenList: [
           { exchangeType, tokens: cleanTokens }
         ]
@@ -72,7 +69,6 @@ router.post('/api/angel/live/stream', (req, res) => {
     console.log(`[live] [SEND] Subscription payload for ${clientCode}:`, subscriptionReq);
     socket.send(JSON.stringify(subscriptionReq));
 
-    // Heartbeat every 30s
     const hbTimer = setInterval(() => {
       try {
         console.log(`[live] [PING] Sending heartbeat for ${clientCode}`);
@@ -95,12 +91,9 @@ router.post('/api/angel/live/stream', (req, res) => {
       console.log(`[live] [DATA] Binary tick (${data.length} bytes) for ${clientCode}`);
       try {
         const buf = Buffer.from(data);
-
-        // These offsets are based on Angel SmartStream samples the user had
         const token = buf.slice(2, 27).toString('utf8').replace(/\0/g, '');
         const ltpRaw = buf.readInt32LE(43);
         const ltp = ltpRaw / 100;
-
         console.log(`[live] [TICK] ${clientCode} token=${token} ltp=${ltp}`);
         liveData[token] = { token, ltp, updatedAt: Date.now() };
       } catch (err) {
@@ -109,7 +102,6 @@ router.post('/api/angel/live/stream', (req, res) => {
       return;
     }
 
-    // Try JSON or text log
     try {
       const jsonMsg = JSON.parse(data);
       console.log(`[live] [JSON] Message from ${clientCode}:`, jsonMsg);
@@ -129,16 +121,15 @@ router.post('/api/angel/live/stream', (req, res) => {
     userData.delete(clientCode);
   });
 
-  // Set entry early (will be overwritten on 'open' with hbTimer)
   userData.set(clientCode, { socket, liveData, hbTimer: null });
 
   console.log(`[live] [STATE] WebSocket session stored for ${clientCode} (waiting open)`);
   return res.json({ message: `WebSocket starting for ${clientCode}`, tokens: cleanTokens, exchangeType });
 });
 
-// GET /api/angel/live/prices
-router.get('/api/angel/live/prices', (req, res) => {
-  console.log('[live] [REQ] GET /api/angel/live/prices query:', req.query);
+// GET /prices  (mounted at /api/angel/live in server.js)
+router.get('/prices', (req, res) => {
+  console.log('[live] [REQ] GET /prices query:', req.query);
 
   const clientCode = req.query?.clientCode;
   if (!clientCode) {
