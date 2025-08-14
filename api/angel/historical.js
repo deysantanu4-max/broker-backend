@@ -46,7 +46,6 @@ async function angelLogin() {
   console.log('✅ Angel login successful');
 }
 
-// Route handler
 app.post('/api/angel/historical', async (req, res) => {
   console.log("📩 Incoming request body:", req.body);
 
@@ -71,18 +70,16 @@ app.post('/api/angel/historical', async (req, res) => {
     const symbolWithEq = symbol.endsWith('-EQ') ? symbol : `${symbol}-EQ`;
     console.log(`🔍 Searching for symbol: ${symbolWithEq}, exchange: ${exchange}`);
 
-    // Search in scrip master using correct keys: symbol and exch_seg
-    const instrument = scripMaster.find(inst => 
+    const instrument = scripMaster.find(inst =>
       inst.symbol.toUpperCase() === symbolWithEq && inst.exch_seg.toUpperCase() === exchange
     );
 
     if (!instrument) {
-      // Log some close matches for debugging
       const closeMatches = scripMaster.filter(inst =>
         inst.symbol.toUpperCase().includes(symbol) && inst.exch_seg.toUpperCase() === exchange
       );
-      console.log(`❌ Symbol '${symbolWithEq}' not found on exchange '${exchange}'. Found ${closeMatches.length} close matches:`, closeMatches.slice(0, 10).map(i => i.symbol));
-      return res.status(404).json({ error: `Symbol '${symbolWithEq}' not found in scrip master for exchange '${exchange}'` });
+      console.log(`❌ Symbol '${symbolWithEq}' not found. Close matches:`, closeMatches.slice(0, 10).map(i => i.symbol));
+      return res.status(404).json({ error: `Symbol '${symbolWithEq}' not found` });
     }
 
     const symbolToken = instrument.token;
@@ -124,11 +121,22 @@ app.post('/api/angel/historical', async (req, res) => {
 
     if (!candleRes.data || !candleRes.data.data) {
       console.error('❌ No data in response from Angel API');
-      return res.status(500).json({ error: 'No data in response from Angel API' });
+      return res.status(500).json({ error: 'No data from Angel API' });
     }
 
     console.log(`✅ Successfully fetched candle data for ${symbolWithEq}`);
-    res.json(candleRes.data);
+
+    // 🔹 Modified response: include feedToken & symbolToken
+    res.json({
+      status: "success",
+      meta: {
+        feedToken,
+        symbolToken,
+        exchange,
+        symbol: symbolWithEq
+      },
+      data: candleRes.data.data
+    });
 
   } catch (error) {
     console.error('❌ Failed to fetch data:', error.response?.data || error.message || error);
