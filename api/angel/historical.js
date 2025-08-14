@@ -33,7 +33,6 @@ const exchangeMap = {
   CDS: 'CDS'
 };
 
-// Load ScripMaster: try local first, fallback to Angel API if exchange missing
 async function loadScripMaster(exchange) {
   try {
     if (!scripMasterCache) {
@@ -55,7 +54,6 @@ async function loadScripMaster(exchange) {
     console.warn('⚠️ Failed to load local ScripMaster:', err.message);
   }
 
-  // Fallback: Fetch from Angel API
   const res = await axios.get('https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json');
   scripMasterCache = res.data;
   console.log(`✅ Loaded ${scripMasterCache.length} instruments from Angel API (includes ${exchange})`);
@@ -71,27 +69,33 @@ app.post('/api/angel/historical', async (req, res) => {
   }
 
   try {
-    // Normalize exchange
     exchange = exchangeMap[exchange.toUpperCase()] || 'NSE';
 
-    // Get tokens from shared login
     const { authToken, feedToken } = await getAngelTokens();
 
     const scripMaster = await loadScripMaster(exchange);
 
     symbol = symbol.toUpperCase();
-
     console.log(`🔍 Searching token for: ${symbol} @ ${exchange}`);
 
-    // ✅ Modified search to support BSE & NSE dynamically
-    const instrument = scripMaster.find(inst =>
+    // ✅ Refined search: exact match first, equity only
+    let instrument = scripMaster.find(inst =>
       inst.exch_seg.toUpperCase() === exchange &&
       (
         inst.symbol.toUpperCase() === symbol ||
-        inst.symbol.toUpperCase() === `${symbol}-EQ` || // auto append -EQ if missing
-        (inst.name && inst.name.toUpperCase().includes(symbol))
-      )
+        inst.symbol.toUpperCase() === `${symbol}-EQ`
+      ) &&
+      (inst.instrumenttype === '' || inst.instrumenttype === 'EQ') // exclude ETFs/FUT/OPT
     );
+
+    // Fallback: name contains symbol (optional)
+    if (!instrument) {
+      instrument = scripMaster.find(inst =>
+        inst.exch_seg.toUpperCase() === exchange &&
+        inst.name &&
+        inst.name.toUpperCase().includes(symbol)
+      );
+    }
 
     if (!instrument) {
       console.error(`❌ Symbol '${symbol}' not found in exchange ${exchange}`);
@@ -103,7 +107,6 @@ app.post('/api/angel/historical', async (req, res) => {
 
     console.log(`✅ Found symbol token: ${symbolToken}`);
 
-    // Prepare date range (last 30 days)
     const now = new Date();
     const fromDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     const pad = (n) => n.toString().padStart(2, '0');
@@ -143,7 +146,6 @@ app.post('/api/angel/historical', async (req, res) => {
 
     console.log(`✅ Candle data fetched for ${symbolWithEq}`);
 
-    // Return candles AND live feed creds in one call
     res.json({
       symbol: symbolWithEq,
       token: symbolToken,
