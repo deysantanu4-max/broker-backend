@@ -1,23 +1,13 @@
 import express from 'express';
 import historicalRouter from './historical.js';
-import liveRouter from './live.js';
+import liveRouter from './live.js'; // <-- Live WebSocket router
 
 const app = express();
 app.use(express.json());
 
-app.use((req, res, next) => {
-  console.log(`[server] ${req.method} ${req.originalUrl}`);
-  next();
-});
-
-// Historical API routes
+// ✅ Mount routers under /api to match existing requests
 app.use('/api/angel/historical', historicalRouter);
-
-// Live API routes
-app.use('/api/angel/live', (req, res, next) => {
-  console.log(`[server] Live route hit: ${req.method} ${req.originalUrl}`);
-  next();
-}, liveRouter);
+app.use('/api/angel/live', liveRouter);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
