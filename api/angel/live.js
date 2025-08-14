@@ -8,7 +8,6 @@ dotenv.config();
 
 const router = Router();
 
-// Use the market data API key from Vercel
 const API_KEY = process.env.ANGEL_MARKET_DATA_API_KEY;
 const CLIENT_ID = process.env.ANGEL_CLIENT_ID;
 const PASSWORD = process.env.ANGEL_PASSWORD;
@@ -21,7 +20,6 @@ if (!API_KEY || !CLIENT_ID || !PASSWORD || !TOTP_SECRET) {
 let authToken = null;
 let feedToken = null;
 
-// Store per-user tick data and sockets
 const userData = new Map(); // clientCode -> { socket, liveData }
 
 function generateCorrelationId() {
@@ -33,21 +31,26 @@ function generateCorrelationId() {
   return result;
 }
 
-// Login to Angel API & get feed token
 async function angelLogin() {
   try {
-    console.log('🔑 Logging in to Angel API for market data...');
+    console.log('🔑 [LOGIN] Starting Angel market data login...');
     const smart_api = new SmartAPI({ api_key: API_KEY });
+
     const totp = otp.authenticator.generate(TOTP_SECRET);
+    console.log(`📟 [LOGIN] Generated TOTP: ${totp} (masked: *****)`);
+
     const session = await smart_api.generateSession(CLIENT_ID, PASSWORD, totp);
+    console.log('✅ [LOGIN] Login success');
 
     authToken = session.data.jwtToken;
     feedToken = session.data.feedToken;
 
-    console.log('✅ Angel login successful for market data');
+    console.log(`📡 [LOGIN] JWT Token received (len=${authToken.length})`);
+    console.log(`📡 [LOGIN] FeedToken: ${feedToken}`);
+
     return { authToken, feedToken };
   } catch (err) {
-    console.error('❌ Angel login failed:', err.message || err);
+    console.error('❌ [LOGIN] Angel login failed:', err.message || err);
     throw err;
   }
 }
@@ -64,84 +67,89 @@ router.post('/stream', async (req, res) => {
 
   try {
     if (!feedToken) {
+      console.log('[STREAM] No feedToken, logging in...');
       await angelLogin();
+    } else {
+      console.log('[STREAM] Using existing feedToken');
     }
 
-    const clientCode = CLIENT_ID; // Using our own account
+    const clientCode = CLIENT_ID;
+
     if (userData.has(clientCode)) {
-      console.log(`[INFO] Closing existing WebSocket for ${clientCode}`);
+      console.log(`[STREAM] Closing existing WebSocket for ${clientCode}`);
       const existing = userData.get(clientCode);
       if (existing.socket) existing.socket.close();
       userData.delete(clientCode);
     }
 
     const wsUrl = `wss://smartapisocket.angelone.in/smart-stream?clientCode=${clientCode}&feedToken=${feedToken}&apiKey=${API_KEY}`;
-    console.log(`[CONNECT] Connecting to: ${wsUrl}`);
+    console.log(`[STREAM] Connecting WebSocket to: ${wsUrl}`);
 
     const userSocket = new WebSocket(wsUrl);
     const liveData = {};
 
     userSocket.on('open', () => {
-      console.log(`✅ [OPEN] WebSocket connected for ${clientCode}`);
+      console.log(`✅ [WS-OPEN] Connected for ${clientCode}`);
 
       const subscriptionReq = {
         correlationID: generateCorrelationId(),
         action: 1,
         params: {
-          mode: 1, // LTP mode
+          mode: 1, // LTP
           tokenList: [
-            { exchangeType: 1, tokens } // NSE tokens
+            { exchangeType: 1, tokens }
           ]
         }
       };
 
-      console.log(`[SEND] Subscription payload for ${clientCode}:`, subscriptionReq);
+      console.log(`[WS-SEND] Subscription payload:`, subscriptionReq);
       userSocket.send(JSON.stringify(subscriptionReq));
 
       setInterval(() => {
-        console.log(`[PING] Sending heartbeat for ${clientCode}`);
+        console.log(`[WS-PING] Sending heartbeat`);
         userSocket.send("ping");
       }, 30000);
     });
 
     userSocket.on('message', (data) => {
       if (data.toString() === "pong") {
-        console.log(`[PONG] Heartbeat received from ${clientCode}`);
+        console.log(`[WS-PONG] Heartbeat received`);
         return;
       }
 
       if (Buffer.isBuffer(data)) {
+        console.log(`[WS-DATA] Binary tick received (${data.length} bytes)`);
         try {
           const buf = Buffer.from(data);
           const token = buf.slice(2, 27).toString('utf8').replace(/\0/g, '');
           const ltp = buf.readInt32LE(43) / 100;
-          console.log(`[TICK] Token=${token} LTP=${ltp}`);
+          console.log(`[WS-TICK] Token=${token} LTP=${ltp}`);
           liveData[token] = { token, ltp, updatedAt: Date.now() };
         } catch (err) {
-          console.error(`[ERROR] Failed to parse binary tick:`, err);
+          console.error(`[WS-ERROR] Failed to parse binary tick:`, err);
         }
       } else {
         try {
           const jsonMsg = JSON.parse(data);
-          console.log(`[JSON]`, jsonMsg);
+          console.log(`[WS-JSON] Message:`, jsonMsg);
         } catch {
-          console.log(`[TEXT]`, data.toString());
+          console.log(`[WS-TEXT] Message: ${data.toString()}`);
         }
       }
     });
 
     userSocket.on('error', (err) => {
-      console.error(`❌ [ERROR] WebSocket error:`, err);
+      console.error(`❌ [WS-ERROR] WebSocket error:`, err);
     });
 
     userSocket.on('close', (code, reason) => {
-      console.warn(`🔌 [CLOSE] WebSocket closed code=${code} reason=${reason}`);
+      console.warn(`🔌 [WS-CLOSE] Closed code=${code} reason=${reason}`);
       userData.delete(clientCode);
     });
 
     userData.set(clientCode, { socket: userSocket, liveData });
 
-    console.log(`[STATE] WebSocket session stored for ${clientCode}`);
+    console.log(`[STREAM] WebSocket session stored for ${clientCode}`);
     res.json({ message: `WebSocket started for ${clientCode}`, tokens });
   } catch (err) {
     res.status(500).json({ error: 'Failed to start live stream', details: err.message });
@@ -153,8 +161,10 @@ router.get('/prices', (req, res) => {
   const clientCode = CLIENT_ID;
   const user = userData.get(clientCode);
   if (!user) {
+    console.warn(`[PRICES] No active stream for ${clientCode}`);
     return res.status(404).json({ error: 'No active stream for this client' });
   }
+  console.log(`[PRICES] Sending ${Object.keys(user.liveData).length} instruments`);
   res.json(user.liveData);
 });
 
