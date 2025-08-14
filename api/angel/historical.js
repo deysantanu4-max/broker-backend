@@ -6,6 +6,7 @@ import axios from 'axios';
 import dotenv from 'dotenv';
 import otp from 'otplib';
 import cors from 'cors';
+import https from 'https';
 
 dotenv.config();
 
@@ -22,76 +23,72 @@ if (!CLIENT_ID || !PASSWORD || !API_KEY || !TOTP_SECRET) {
   console.error('❌ Missing required env vars: ANGEL_CLIENT_ID, ANGEL_PASSWORD, ANGEL_API_KEY, ANGEL_TOTP_SECRET');
 }
 
-let smart_api = new SmartAPI({ api_key: API_KEY });
+// cache for scrip master + tokens to avoid repeated fetches/logins
 let scripMasterCache = null;
 let authToken = null;
 let feedToken = null;
 
+// Load scrip master list once
 async function loadScripMaster() {
   if (scripMasterCache) return scripMasterCache;
-  console.log('📥 Fetching scrip master JSON from Angel public URL...');
+  console.log('📥 Fetching scrip master JSON...');
   const res = await axios.get('https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json');
   scripMasterCache = res.data;
   console.log(`✅ Loaded ${scripMasterCache.length} instruments`);
   return scripMasterCache;
 }
 
+// Login to AngelOne SmartAPI
 async function angelLogin() {
-  const totp = otp.authenticator.generate(TOTP_SECRET);
-  const session = await smart_api.generateSession(CLIENT_ID, PASSWORD, totp);
+  const smart_api = new SmartAPI({ api_key: API_KEY });
+  const totpCode = otp.authenticator.generate(TOTP_SECRET);
+  const session = await smart_api.generateSession(CLIENT_ID, PASSWORD, totpCode);
 
   authToken = session.data.jwtToken;
   feedToken = session.data.feedToken;
 
   console.log('✅ Angel login successful');
+  return { authToken, feedToken };
 }
 
-// Route handler
 app.post('/api/angel/historical', async (req, res) => {
   console.log("📩 Incoming request body:", req.body);
 
   let { symbol, exchange } = req.body;
-
   if (!symbol || !exchange) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
   try {
-    if (!feedToken) {
+    // ensure logged in
+    if (!feedToken || !authToken) {
       await angelLogin();
     }
 
     const scripMaster = await loadScripMaster();
 
-    // Normalize inputs
+    // Normalize
     symbol = symbol.toUpperCase();
     exchange = exchange.toUpperCase();
-
-    // Append '-EQ' suffix if not present
     const symbolWithEq = symbol.endsWith('-EQ') ? symbol : `${symbol}-EQ`;
-    console.log(`🔍 Searching for symbol: ${symbolWithEq}, exchange: ${exchange}`);
 
-    // Search in scrip master using correct keys: symbol and exch_seg
-    const instrument = scripMaster.find(inst => 
-      inst.symbol.toUpperCase() === symbolWithEq && inst.exch_seg.toUpperCase() === exchange
+    console.log(`🔍 Searching token for: ${symbolWithEq} @ ${exchange}`);
+
+    const instrument = scripMaster.find(inst =>
+      inst.symbol.toUpperCase() === symbolWithEq &&
+      inst.exch_seg.toUpperCase() === exchange
     );
 
     if (!instrument) {
-      // Log some close matches for debugging
-      const closeMatches = scripMaster.filter(inst =>
-        inst.symbol.toUpperCase().includes(symbol) && inst.exch_seg.toUpperCase() === exchange
-      );
-      console.log(`❌ Symbol '${symbolWithEq}' not found on exchange '${exchange}'. Found ${closeMatches.length} close matches:`, closeMatches.slice(0, 10).map(i => i.symbol));
-      return res.status(404).json({ error: `Symbol '${symbolWithEq}' not found in scrip master for exchange '${exchange}'` });
+      return res.status(404).json({ error: `Symbol '${symbolWithEq}' not found on ${exchange}` });
     }
 
     const symbolToken = instrument.token;
-    console.log(`✅ Found symbol token: ${symbolToken} for ${symbolWithEq}`);
+    console.log(`✅ Found symbol token: ${symbolToken}`);
 
     // Prepare date range
     const now = new Date();
-    const fromDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-
+    const fromDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000); // 30 days
     const pad = (n) => n.toString().padStart(2, '0');
     const formatDate = (date) =>
       `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
@@ -119,20 +116,30 @@ app.post('/api/angel/historical', async (req, res) => {
           'Content-Type': 'application/json',
           Accept: 'application/json',
         },
+        httpsAgent: new https.Agent({ rejectUnauthorized: false })
       }
     );
 
     if (!candleRes.data || !candleRes.data.data) {
-      console.error('❌ No data in response from Angel API');
-      return res.status(500).json({ error: 'No data in response from Angel API' });
+      return res.status(500).json({ error: 'No data from Angel API' });
     }
 
-    console.log(`✅ Successfully fetched candle data for ${symbolWithEq}`);
-    res.json(candleRes.data);
+    console.log(`✅ Candle data fetched for ${symbolWithEq}`);
+
+    // ✅ Return candles AND live feed creds in one call
+    res.json({
+      symbol: symbolWithEq,
+      token: symbolToken,
+      exchange,
+      clientCode: CLIENT_ID,
+      feedToken: feedToken,
+      apiKey: API_KEY,
+      data: candleRes.data.data
+    });
 
   } catch (error) {
-    console.error('❌ Failed to fetch data:', error.response?.data || error.message || error);
-    res.status(500).json({ error: 'Failed to fetch data' });
+    console.error('❌ Error:', error.response?.data || error.message);
+    res.status(500).json({ error: error.message || 'Failed to fetch data' });
   }
 });
 
