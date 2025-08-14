@@ -7,7 +7,7 @@ import cors from 'cors';
 import https from 'https';
 import fs from 'fs';
 import path from 'path';
-import { getAngelTokens } from './login-angel-mpin.js'; // ✅ Reuse your existing login.js function
+import { getAngelTokens } from './login-angel-mpin.js'; // ✅ Reuse existing login
 
 dotenv.config();
 
@@ -23,6 +23,16 @@ if (!CLIENT_ID || !API_KEY) {
 }
 
 let scripMasterCache = null;
+
+// ✅ Map incoming exchange strings to Angel constants
+const exchangeMap = {
+  NSE: 'NSE',
+  BSE: 'BSE',
+  MCX: 'MCX',
+  NFO: 'NFO',
+  BFO: 'BFO',
+  CDS: 'CDS'
+};
 
 // ✅ Load ScripMaster: try local first, fallback to Angel API if exchange missing
 async function loadScripMaster(exchange) {
@@ -59,14 +69,16 @@ app.post('/api/angel/historical', async (req, res) => {
   }
 
   try {
-    // ✅ Get tokens from shared login session
+    // ✅ Normalize exchange
+    exchange = exchangeMap[exchange.toUpperCase()] || 'NSE';
+
+    // ✅ Get tokens from shared login
     const { authToken, feedToken } = await getAngelTokens();
 
     const scripMaster = await loadScripMaster(exchange);
 
-    // Normalize symbol
+    // Normalize symbol format
     symbol = symbol.toUpperCase();
-    exchange = exchange.toUpperCase();
     const symbolWithEq = symbol.endsWith('-EQ') ? symbol : `${symbol}-EQ`;
 
     console.log(`🔍 Searching token for: ${symbolWithEq} @ ${exchange}`);
