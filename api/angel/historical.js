@@ -33,6 +33,7 @@ const exchangeMap = {
   CDS: 'CDS'
 };
 
+// Load ScripMaster: local first, fallback to Angel API
 async function loadScripMaster(exchange) {
   try {
     if (!scripMasterCache) {
@@ -54,12 +55,14 @@ async function loadScripMaster(exchange) {
     console.warn('⚠️ Failed to load local ScripMaster:', err.message);
   }
 
+  // Fallback: fetch from Angel API
   const res = await axios.get('https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json');
   scripMasterCache = res.data;
   console.log(`✅ Loaded ${scripMasterCache.length} instruments from Angel API (includes ${exchange})`);
   return scripMasterCache;
 }
 
+// ======================== Historical Candles ========================
 app.post('/api/angel/historical', async (req, res) => {
   console.log("📩 Incoming request body:", req.body);
 
@@ -72,23 +75,22 @@ app.post('/api/angel/historical', async (req, res) => {
     exchange = exchangeMap[exchange.toUpperCase()] || 'NSE';
 
     const { authToken, feedToken } = await getAngelTokens();
-
     const scripMaster = await loadScripMaster(exchange);
 
     symbol = symbol.toUpperCase();
     console.log(`🔍 Searching token for: ${symbol} @ ${exchange}`);
 
-    // ✅ Refined search: exact match first, equity only
+    // ✅ Refined search: exact symbol match first, equity-only
     let instrument = scripMaster.find(inst =>
       inst.exch_seg.toUpperCase() === exchange &&
       (
         inst.symbol.toUpperCase() === symbol ||
         inst.symbol.toUpperCase() === `${symbol}-EQ`
       ) &&
-      (inst.instrumenttype === '' || inst.instrumenttype === 'EQ') // exclude ETFs/FUT/OPT
+      (inst.instrumenttype === '' || inst.instrumenttype === 'EQ')
     );
 
-    // Fallback: name contains symbol (optional)
+    // Fallback: name contains query
     if (!instrument) {
       instrument = scripMaster.find(inst =>
         inst.exch_seg.toUpperCase() === exchange &&
@@ -107,6 +109,7 @@ app.post('/api/angel/historical', async (req, res) => {
 
     console.log(`✅ Found symbol token: ${symbolToken}`);
 
+    // Prepare last 30 days
     const now = new Date();
     const fromDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     const pad = (n) => n.toString().padStart(2, '0');
@@ -159,6 +162,34 @@ app.post('/api/angel/historical', async (req, res) => {
   } catch (error) {
     console.error('❌ Error:', error.response?.data || error.message);
     res.status(500).json({ error: error.message || 'Failed to fetch data' });
+  }
+});
+
+// ======================== Scrip Search / Autocomplete ========================
+app.get('/api/angel/scrip-search', async (req, res) => {
+  try {
+    const query = (req.query.query || '').toUpperCase();
+    const exchange = exchangeMap[(req.query.exchange || 'NSE').toUpperCase()] || 'NSE';
+
+    if (!query) return res.json([]);
+
+    const scripMaster = await loadScripMaster(exchange);
+
+    // Partial match on symbol or name, only equities
+    const matches = scripMaster.filter(inst =>
+      inst.exch_seg.toUpperCase() === exchange &&
+      (
+        inst.symbol.toUpperCase().startsWith(query) ||
+        (inst.name && inst.name.toUpperCase().includes(query))
+      ) &&
+      (inst.instrumenttype === '' || inst.instrumenttype === 'EQ')
+    );
+
+    res.json(matches.map(i => ({ symbol: i.symbol, name: i.name })));
+
+  } catch (error) {
+    console.error('❌ Scrip search error:', error);
+    res.status(500).json({ error: error.message || 'Failed to search scrips' });
   }
 });
 
