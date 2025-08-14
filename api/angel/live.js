@@ -1,8 +1,5 @@
 import crypto from 'crypto';
 
-/**
- * Generate TOTP for AngelOne login
- */
 function generateTOTP(secret) {
   const epoch = Math.floor(Date.now() / 1000);
   const time = Math.floor(epoch / 30);
@@ -51,8 +48,16 @@ export default async function handler(req, res) {
       }
     );
 
-    const loginData = await loginResp.json();
-    console.log("🔐 Login response:", loginData);
+    const rawText = await loginResp.text();
+    console.log("📥 Raw login response:", rawText);
+
+    let loginData;
+    try {
+      loginData = JSON.parse(rawText);
+    } catch (parseErr) {
+      console.error("❌ Failed to parse JSON:", parseErr);
+      return res.status(500).json({ error: "Invalid JSON from AngelOne", raw: rawText });
+    }
 
     if (!loginResp.ok || !loginData?.data?.feedToken) {
       console.error("❌ Login failed", loginData);
