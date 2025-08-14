@@ -32,6 +32,12 @@ export default async function handler(req, res) {
     }
 
     console.log("🔑 Logging in to AngelOne...");
+    const loginBody = {
+      clientcode: clientId,
+      password: password,
+      totp: generateTOTP(totpSecret)
+    };
+
     const loginResp = await fetch(
       "https://apiconnect.angelone.in/rest/auth/angelbroking/user/v1/loginByPassword",
       {
@@ -40,23 +46,34 @@ export default async function handler(req, res) {
           "X-PrivateKey": apiKey,
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({
-          clientcode: clientId,
-          password: password,
-          totp: generateTOTP(totpSecret)
-        })
+        body: JSON.stringify(loginBody)
       }
     );
 
+    console.log(`📡 Login HTTP status: ${loginResp.status} ${loginResp.statusText}`);
+    console.log("📡 Login headers:", Object.fromEntries(loginResp.headers.entries()));
+
     const rawText = await loginResp.text();
-    console.log("📥 Raw login response:", rawText);
+    console.log("📥 Raw login response text:", rawText);
+
+    if (!rawText) {
+      return res.status(502).json({
+        error: "Empty response from AngelOne login API",
+        status: loginResp.status,
+        headers: Object.fromEntries(loginResp.headers.entries())
+      });
+    }
 
     let loginData;
     try {
       loginData = JSON.parse(rawText);
     } catch (parseErr) {
       console.error("❌ Failed to parse JSON:", parseErr);
-      return res.status(500).json({ error: "Invalid JSON from AngelOne", raw: rawText });
+      return res.status(500).json({
+        error: "Invalid JSON from AngelOne",
+        raw: rawText,
+        status: loginResp.status
+      });
     }
 
     if (!loginResp.ok || !loginData?.data?.feedToken) {
