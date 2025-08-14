@@ -7,7 +7,7 @@ import cors from 'cors';
 import https from 'https';
 import fs from 'fs';
 import path from 'path';
-import { getAngelTokens } from './login-angel-mpin.js'; // ✅ Reuse existing login
+import { getAngelTokens } from './login-angel-mpin.js';
 
 dotenv.config();
 
@@ -36,27 +36,30 @@ const exchangeMap = {
 
 // ✅ Load ScripMaster: try local first, fallback to Angel API if exchange missing
 async function loadScripMaster(exchange) {
-  if (scripMasterCache) return scripMasterCache;
-
-  // 1️⃣ Try local JSON
   try {
-    console.log('📥 Loading local scrip master JSON...');
-    const scripMasterPath = path.join(process.cwd(), 'api', 'angel', 'OpenAPIScripMaster.json');
-    const rawData = fs.readFileSync(scripMasterPath, 'utf8');
-    scripMasterCache = JSON.parse(rawData);
-    console.log(`✅ Loaded ${scripMasterCache.length} instruments from local file`);
+    if (!scripMasterCache) {
+      console.log('📥 Loading local scrip master JSON...');
+      const scripMasterPath = path.join(process.cwd(), 'api', 'angel', 'OpenAPIScripMaster.json');
+      const rawData = fs.readFileSync(scripMasterPath, 'utf8');
+      scripMasterCache = JSON.parse(rawData);
+      console.log(`✅ Loaded ${scripMasterCache.length} instruments from local file`);
+    }
 
     const hasExchange = scripMasterCache.some(inst => inst.exch_seg.toUpperCase() === exchange);
-    if (hasExchange) return scripMasterCache;
+    if (hasExchange) {
+      console.log(`📄 Found exchange ${exchange} in local file`);
+      return scripMasterCache;
+    } else {
+      console.log(`⚠️ Exchange ${exchange} not found in local file — fetching from Angel API...`);
+    }
   } catch (err) {
-    console.warn('⚠️ Local scrip master not found or unreadable:', err.message);
+    console.warn('⚠️ Failed to load local ScripMaster:', err.message);
   }
 
   // 2️⃣ Fallback: Fetch from Angel API
-  console.log('🌐 Fetching scrip master from Angel API...');
   const res = await axios.get('https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json');
   scripMasterCache = res.data;
-  console.log(`✅ Loaded ${scripMasterCache.length} instruments from Angel API`);
+  console.log(`✅ Loaded ${scripMasterCache.length} instruments from Angel API (includes ${exchange})`);
   return scripMasterCache;
 }
 
@@ -77,7 +80,7 @@ app.post('/api/angel/historical', async (req, res) => {
 
     const scripMaster = await loadScripMaster(exchange);
 
-    // Normalize symbol format
+    // ✅ Always add "-EQ" for equity symbols if missing
     symbol = symbol.toUpperCase();
     const symbolWithEq = symbol.endsWith('-EQ') ? symbol : `${symbol}-EQ`;
 
@@ -89,6 +92,7 @@ app.post('/api/angel/historical', async (req, res) => {
     );
 
     if (!instrument) {
+      console.error(`❌ Symbol '${symbolWithEq}' not found in exchange ${exchange}`);
       return res.status(404).json({ error: `Symbol '${symbolWithEq}' not found on ${exchange}` });
     }
 
