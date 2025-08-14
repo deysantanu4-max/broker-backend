@@ -7,6 +7,8 @@ import dotenv from 'dotenv';
 import otp from 'otplib';
 import cors from 'cors';
 import https from 'https';
+import fs from 'fs';
+import path from 'path';
 
 dotenv.config();
 
@@ -23,22 +25,29 @@ if (!CLIENT_ID || !PASSWORD || !API_KEY || !TOTP_SECRET) {
   console.error('❌ Missing required env vars: ANGEL_CLIENT_ID, ANGEL_PASSWORD, ANGEL_API_KEY, ANGEL_TOTP_SECRET');
 }
 
-// cache for scrip master + tokens to avoid repeated fetches/logins
 let scripMasterCache = null;
 let authToken = null;
 let feedToken = null;
 
-// Load scrip master list once
+// ✅ Load scrip master from local file
 async function loadScripMaster() {
   if (scripMasterCache) return scripMasterCache;
-  console.log('📥 Fetching scrip master JSON...');
-  const res = await axios.get('https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json');
-  scripMasterCache = res.data;
-  console.log(`✅ Loaded ${scripMasterCache.length} instruments`);
-  return scripMasterCache;
+
+  console.log('📥 Loading local scrip master JSON...');
+  const scripMasterPath = path.join(process.cwd(), 'api', 'angel', 'OpenAPIScripMaster.json');
+
+  try {
+    const rawData = fs.readFileSync(scripMasterPath, 'utf8');
+    scripMasterCache = JSON.parse(rawData);
+    console.log(`✅ Loaded ${scripMasterCache.length} instruments from local file`);
+    return scripMasterCache;
+  } catch (err) {
+    console.error('❌ Failed to load local scrip master:', err.message);
+    throw new Error('Cannot load ScripMaster JSON from disk');
+  }
 }
 
-// Login to AngelOne SmartAPI
+// ✅ Login to AngelOne SmartAPI
 async function angelLogin() {
   const smart_api = new SmartAPI({ api_key: API_KEY });
   const totpCode = otp.authenticator.generate(TOTP_SECRET);
@@ -60,14 +69,14 @@ app.post('/api/angel/historical', async (req, res) => {
   }
 
   try {
-    // ensure logged in
+    // Ensure logged in
     if (!feedToken || !authToken) {
       await angelLogin();
     }
 
     const scripMaster = await loadScripMaster();
 
-    // Normalize
+    // Normalize symbol
     symbol = symbol.toUpperCase();
     exchange = exchange.toUpperCase();
     const symbolWithEq = symbol.endsWith('-EQ') ? symbol : `${symbol}-EQ`;
@@ -86,9 +95,9 @@ app.post('/api/angel/historical', async (req, res) => {
     const symbolToken = instrument.token;
     console.log(`✅ Found symbol token: ${symbolToken}`);
 
-    // Prepare date range
+    // Prepare date range (last 30 days)
     const now = new Date();
-    const fromDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000); // 30 days
+    const fromDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     const pad = (n) => n.toString().padStart(2, '0');
     const formatDate = (date) =>
       `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
