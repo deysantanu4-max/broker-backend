@@ -1,10 +1,12 @@
 // /api/angel/live.js
 import axios from "axios";
 import crypto from "crypto";
-import os from "os";
 import https from "https";
+import WebSocket from "ws";
 
-// Convert Base32 to Buffer (Google Authenticator style)
+// =========================
+// Base32 decode for TOTP
+// =========================
 function base32ToBuffer(base32) {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
   let bits = "";
@@ -22,11 +24,13 @@ function base32ToBuffer(base32) {
   return Buffer.from(buffer);
 }
 
-// Generate TOTP using Base32 secret
+// =========================
+// Generate TOTP
+// =========================
 function generateTOTP(secret) {
   const epoch = Math.floor(Date.now() / 1000);
   const time = Math.floor(epoch / 30);
-  const key = base32ToBuffer(secret); // ✅ Fixed to use Base32 decode
+  const key = base32ToBuffer(secret);
   const buffer = Buffer.alloc(8);
   buffer.writeUInt32BE(0, 0);
   buffer.writeUInt32BE(time, 4);
@@ -36,6 +40,53 @@ function generateTOTP(secret) {
   return otp.toString().padStart(6, "0");
 }
 
+// =========================
+// Start SmartAPI Streaming
+// =========================
+function startSmartStream(clientCode, feedToken, apiKey, tokensToSubscribe) {
+  const wsUrl = `wss://smartapisocket.angelone.in/smart-stream?clientCode=${clientCode}&feedToken=${feedToken}&apiKey=${apiKey}`;
+  const ws = new WebSocket(wsUrl);
+
+  ws.on("open", () => {
+    console.log("✅ Connected to SmartAPI stream");
+
+    const subscribeMessage = {
+      action: 1, // subscribe
+      params: {
+        mode: 1, // 1 = LTP, 2 = Quote, 3 = SnapQuote
+        tokenList: [
+          {
+            exchangeType: 1, // 1 = NSE CM, 2 = NSE FO, 3 = BSE CM, etc.
+            tokens: tokensToSubscribe
+          }
+        ]
+      }
+    };
+    ws.send(JSON.stringify(subscribeMessage));
+    console.log("📡 Subscription sent:", subscribeMessage);
+  });
+
+  ws.on("message", (msg) => {
+    try {
+      console.log("📨 Tick:", msg.toString());
+    } catch (err) {
+      console.error("💥 Failed to parse tick:", err);
+    }
+  });
+
+  ws.on("close", () => {
+    console.log("❌ WebSocket closed, reconnecting in 5s...");
+    setTimeout(() => startSmartStream(clientCode, feedToken, apiKey, tokensToSubscribe), 5000);
+  });
+
+  ws.on("error", (err) => {
+    console.error("💥 WebSocket error:", err);
+  });
+}
+
+// =========================
+// API Handler
+// =========================
 export default async function handler(req, res) {
   console.log("📩 /api/angel/live hit");
 
@@ -43,7 +94,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method Not Allowed" });
   }
 
-  const apiKey = process.env.ANGEL_API_KEY; // ✅ Use same as historical
+  const apiKey = process.env.ANGEL_API_KEY;
   const clientId = process.env.ANGEL_CLIENT_ID;
   const password = process.env.ANGEL_PASSWORD;
   const totpSecret = process.env.ANGEL_TOTP_SECRET;
@@ -62,16 +113,14 @@ export default async function handler(req, res) {
       totp: generateTOTP(totpSecret)
     };
 
-    console.log(`📟 Generated TOTP: ${payload.totp}`); // Debugging OTP
-
     const headers = {
       "X-PrivateKey": apiKey,
       "Content-Type": "application/json",
       "Accept": "application/json",
       "X-UserType": "USER",
       "X-SourceID": "WEB",
-      "X-ClientLocalIP": "192.168.1.1", // dummy safe IP
-      "X-ClientPublicIP": "122.176.75.22", // dummy safe public IP
+      "X-ClientLocalIP": "192.168.1.1",
+      "X-ClientPublicIP": "122.176.75.22",
       "X-MACAddress": "00:0a:95:9d:68:16"
     };
 
@@ -92,10 +141,16 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Login failed", details: loginResp.data });
     }
 
-    console.log("✅ Returning WS creds");
+    const feedToken = loginResp.data.data.feedToken;
+
+    // Start streaming for tokens (example: NIFTY 50)
+    const tokensToSubscribe = ["26009"]; // Replace with your tokens
+    startSmartStream(clientId, feedToken, apiKey, tokensToSubscribe);
+
     return res.status(200).json({
+      message: "✅ Login successful, streaming started on server",
       clientCode: clientId,
-      feedToken: loginResp.data.data.feedToken,
+      feedToken: feedToken,
       apiKey: apiKey
     });
 
