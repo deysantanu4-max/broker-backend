@@ -64,3 +64,59 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "Internal server error", details: error.message || error });
   }
 }
+
+/* -------------------------------
+   ✅ New export for historical.js
+---------------------------------- */
+let cachedTokens = null;
+
+export async function getAngelTokens() {
+  if (cachedTokens) {
+    console.log("⚡ Using cached AngelOne tokens");
+    return cachedTokens;
+  }
+
+  const CLIENT_SECRET = process.env.ANGEL_API_KEY;
+  const ANGEL_API_BASE = "https://apiconnect.angelone.in";
+
+  const payload = {
+    clientcode: process.env.ANGEL_CLIENT_ID,
+    password: process.env.ANGEL_PASSWORD,
+    totp: process.env.ANGEL_TOTP_SECRET ? undefined : "",
+    state: "server-call"
+  };
+
+  // Generate TOTP if available
+  if (process.env.ANGEL_TOTP_SECRET) {
+    const otp = await import("otplib");
+    payload.totp = otp.authenticator.generate(process.env.ANGEL_TOTP_SECRET);
+  }
+
+  const response = await axios({
+    method: 'post',
+    url: `${ANGEL_API_BASE}/rest/auth/angelbroking/user/v1/loginByPassword`,
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'X-UserType': 'USER',
+      'X-SourceID': 'WEB',
+      'X-ClientLocalIP': '127.0.0.1',
+      'X-ClientPublicIP': '127.0.0.1',
+      'X-MACAddress': '00:00:00:00:00:00',
+      'X-PrivateKey': CLIENT_SECRET,
+    },
+    data: JSON.stringify(payload),
+    validateStatus: () => true,
+  });
+
+  const token = response.data?.data?.jwtToken;
+  const feedToken = response.data?.data?.feedToken;
+
+  if (!token) {
+    throw new Error("Login failed: No access token received");
+  }
+
+  cachedTokens = { authToken: token, feedToken };
+  console.log("🔑 Cached new AngelOne tokens");
+  return cachedTokens;
+}
