@@ -2,9 +2,7 @@ import fs from 'fs';
 import path from 'path';
 
 export default function handler(req, res) {
-  // Get absolute path to the JSON file
   const filePath = path.join(process.cwd(), 'api', 'angel', 'OpenAPIScripMaster.json');
-
   try {
     const jsonData = fs.readFileSync(filePath, 'utf8');
     res.setHeader('Content-Type', 'application/json');
