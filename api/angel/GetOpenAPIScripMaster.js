@@ -7,20 +7,22 @@ export default function handler(req, res) {
     const filePath = path.join(process.cwd(), 'api', 'angel', 'OpenAPIScripMaster.json');
     const jsonData = JSON.parse(fs.readFileSync(filePath, 'utf8'));
 
-    // If query is provided, filter results
     let results = jsonData;
+
     if (query) {
       const q = query.toLowerCase();
+
+      // Use a Set to avoid duplicates based on baseSymbol
+      const seen = new Set();
+
       results = jsonData.filter(item => {
-        const tradingsymbol = item.tradingsymbol || '';
-        const symbol = item.symbol || '';
-        const name = item.name || '';
-        return (
-          tradingsymbol.toLowerCase().includes(q) ||
-          symbol.toLowerCase().includes(q) ||
-          name.toLowerCase().includes(q)
-        );
-      }).slice(0, 20); // limit to 20 results
+        const symbol = (item.symbol || '').toLowerCase();
+        const baseSymbol = symbol.split('-')[0]; // remove EQ/BE suffix
+        if (!baseSymbol.startsWith(q)) return false; // match only from start
+        if (seen.has(baseSymbol)) return false; // skip duplicates
+        seen.add(baseSymbol);
+        return true;
+      }).slice(0, 20);
     }
 
     res.setHeader('Content-Type', 'application/json');
