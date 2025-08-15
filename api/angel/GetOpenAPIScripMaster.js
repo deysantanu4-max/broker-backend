@@ -11,16 +11,20 @@ export default function handler(req, res) {
 
     if (query) {
       const q = query.toLowerCase();
-
-      // Use a Set to avoid duplicates based on baseSymbol
       const seen = new Set();
 
       results = jsonData.filter(item => {
         const symbol = (item.symbol || '').toLowerCase();
-        const baseSymbol = symbol.split('-')[0]; // remove EQ/BE suffix
-        if (!baseSymbol.startsWith(q)) return false; // match only from start
-        if (seen.has(baseSymbol)) return false; // skip duplicates
-        seen.add(baseSymbol);
+        const baseSymbol = symbol.split('-')[0];
+        const exchange = (item.exch_seg || '').toUpperCase();
+
+        if (!baseSymbol.startsWith(q)) return false;
+
+        // Track by baseSymbol + exchange so NSE and BSE both appear
+        const key = `${baseSymbol}-${exchange}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+
         return true;
       }).slice(0, 20);
     }
