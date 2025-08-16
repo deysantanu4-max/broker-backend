@@ -57,8 +57,14 @@ export default async function handler(req, res) {
       return res.status(401).json({ error: "Login failed: No access token received", details: response.data });
     }
 
-    // Return full response data so client sees { data: { jwtToken: ... } }
-    return res.status(200).json(response.data);
+    return res.status(200).json({
+      ...response.data,
+      data: {
+        ...response.data.data,
+        apiKey: CLIENT_SECRET, 
+      },
+    });
+
   } catch (error) {
     console.error("Login error:", error.response?.data || error.message || error);
     return res.status(500).json({ error: "Internal server error", details: error.message || error });
