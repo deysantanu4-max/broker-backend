@@ -31,6 +31,9 @@ export default function handler(req, res) {
       }).slice(0, 20);
     }
 
+    console.log("📩 GetOpenAPIScripMaster called with query:", query);
+    console.log("🔍 Returning results count:", results.length);
+
     res.setHeader('Content-Type', 'application/json');
     res.status(200).json(results);
   } catch (error) {
