@@ -33,15 +33,6 @@ const exchangeMap = {
   CDS: 'CDS'
 };
 
-// Allowed Angel intervals
-const validIntervals = new Set([
-  'ONE_MINUTE',
-  'FIVE_MINUTE',
-  'FIFTEEN_MINUTE',
-  'ONE_HOUR',
-  'ONE_DAY'
-]);
-
 // Load ScripMaster: local first, fallback to Angel API
 async function loadScripMaster(exchange) {
   try {
@@ -75,15 +66,10 @@ async function loadScripMaster(exchange) {
 app.post('/api/angel/historical', async (req, res) => {
   console.log("📩 Incoming request body:", req.body);
 
-  let { symbol, exchange, interval } = req.body;
+  let { symbol, exchange } = req.body;
   if (!symbol || !exchange) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
-
-  // ✅ Default to 1-minute if not provided
-  interval = interval && validIntervals.has(interval.toUpperCase())
-    ? interval.toUpperCase()
-    : 'ONE_MINUTE';
 
   try {
     exchange = exchangeMap[exchange.toUpperCase()] || 'NSE';
@@ -130,14 +116,14 @@ app.post('/api/angel/historical', async (req, res) => {
     const formatDate = (date) =>
       `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 
-    console.log(`⏳ Fetching candle data [${interval}] from ${formatDate(fromDate)} to ${formatDate(now)}...`);
+    console.log(`⏳ Fetching candle data from ${formatDate(fromDate)} to ${formatDate(now)}...`);
 
     const candleRes = await axios.post(
       'https://apiconnect.angelone.in/rest/secure/angelbroking/historical/v1/getCandleData',
       {
         exchange,
         symboltoken: symbolToken,
-        interval, // ✅ dynamic interval
+        interval: 'ONE_MINUTE',
         fromdate: formatDate(fromDate),
         todate: formatDate(now),
       },
@@ -161,13 +147,12 @@ app.post('/api/angel/historical', async (req, res) => {
       return res.status(500).json({ error: 'No data from Angel API' });
     }
 
-    console.log(`✅ Candle data fetched for ${symbolWithEq} (${interval})`);
+    console.log(`✅ Candle data fetched for ${symbolWithEq}`);
 
     res.json({
       symbol: symbolWithEq,
       token: symbolToken,
       exchange,
-      interval,
       clientCode: CLIENT_ID,
       feedToken: feedToken,
       apiKey: API_KEY,
@@ -177,6 +162,34 @@ app.post('/api/angel/historical', async (req, res) => {
   } catch (error) {
     console.error('❌ Error:', error.response?.data || error.message);
     res.status(500).json({ error: error.message || 'Failed to fetch data' });
+  }
+});
+
+// ======================== Scrip Search / Autocomplete ========================
+app.get('/api/angel/scrip-search', async (req, res) => {
+  try {
+    const query = (req.query.query || '').toUpperCase();
+    const exchange = exchangeMap[(req.query.exchange || 'NSE').toUpperCase()] || 'NSE';
+
+    if (!query) return res.json([]);
+
+    const scripMaster = await loadScripMaster(exchange);
+
+    // Partial match on symbol or name, only equities
+    const matches = scripMaster.filter(inst =>
+      inst.exch_seg.toUpperCase() === exchange &&
+      (
+        inst.symbol.toUpperCase().startsWith(query) ||
+        (inst.name && inst.name.toUpperCase().includes(query))
+      ) &&
+      (inst.instrumenttype === '' || inst.instrumenttype === 'EQ')
+    );
+
+    res.json(matches.map(i => ({ symbol: i.symbol, name: i.name })));
+
+  } catch (error) {
+    console.error('❌ Scrip search error:', error);
+    res.status(500).json({ error: error.message || 'Failed to search scrips' });
   }
 });
 
