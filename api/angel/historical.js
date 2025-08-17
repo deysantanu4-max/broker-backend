@@ -42,7 +42,7 @@ const validIntervals = new Set([
   'ONE_DAY'
 ]);
 
-// Load ScripMaster: local first, fallback to Angel API
+// -------------------- ScripMaster Loader --------------------
 async function loadScripMaster(exchange) {
   try {
     if (!scripMasterCache) {
@@ -71,7 +71,7 @@ async function loadScripMaster(exchange) {
   return scripMasterCache;
 }
 
-// ======================== Historical Candles ========================
+// -------------------- Historical Candles --------------------
 app.post('/api/angel/historical', async (req, res) => {
   console.log("📩 Incoming request body:", req.body);
 
@@ -154,7 +154,7 @@ app.post('/api/angel/historical', async (req, res) => {
       {
         exchange,
         symboltoken: symbolToken,
-        interval, // ✅ dynamic interval
+        interval,
         fromdate: formatDate(fromDate),
         todate: formatDate(now),
       },
@@ -194,6 +194,48 @@ app.post('/api/angel/historical', async (req, res) => {
   } catch (error) {
     console.error('❌ Error:', error.response?.data || error.message);
     res.status(500).json({ error: error.message || 'Failed to fetch data' });
+  }
+});
+
+// -------------------- Index Values --------------------
+app.get('/api/angel/index', async (req, res) => {
+  try {
+    const { name } = req.query;
+    if (!name) return res.status(400).json({ error: 'Missing index name' });
+
+    const { authToken } = await getAngelTokens();
+
+    const idxRes = await axios.post(
+      "https://apiconnect.angelone.in/rest/secure/angelbroking/market/v1/getIndices",
+      { indexName: name.toUpperCase() },  // e.g. NIFTY, BANKNIFTY, SENSEX
+      {
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          'X-PrivateKey': API_KEY,
+          'X-UserType': 'USER',
+          'X-SourceID': 'WEB',
+          'X-ClientLocalIP': '127.0.0.1',
+          'X-ClientPublicIP': '127.0.0.1',
+          'X-MACAddress': '00:00:00:00:00:00',
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        httpsAgent: new https.Agent({ rejectUnauthorized: false })
+      }
+    );
+
+    if (!idxRes.data || !idxRes.data.data) {
+      return res.status(500).json({ error: 'No data from Angel API' });
+    }
+
+    res.json({
+      index: name.toUpperCase(),
+      data: idxRes.data.data
+    });
+
+  } catch (err) {
+    console.error("❌ Index fetch error:", err.response?.data || err.message);
+    res.status(500).json({ error: err.message || 'Failed to fetch index' });
   }
 });
 
