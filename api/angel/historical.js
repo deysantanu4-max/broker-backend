@@ -123,31 +123,14 @@ app.post('/api/angel/historical', async (req, res) => {
 
     console.log(`✅ Found symbol token: ${symbolToken}`);
 
-    // ✅ Choose max range by interval
+    // Prepare last 30 days
     const now = new Date();
-    let daysBack;
-    switch (interval) {
-      case 'ONE_MINUTE':
-      case 'FIVE_MINUTE':
-      case 'FIFTEEN_MINUTE':
-        daysBack = 30; // Angel limit for intraday
-        break;
-      case 'ONE_HOUR':
-        daysBack = 180; // ~6 months
-        break;
-      case 'ONE_DAY':
-        daysBack = 365; // ~1 year
-        break;
-      default:
-        daysBack = 30;
-    }
-
-    const fromDate = new Date(now.getTime() - daysBack * 24 * 60 * 60 * 1000);
+    const fromDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     const pad = (n) => n.toString().padStart(2, '0');
     const formatDate = (date) =>
       `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 
-    console.log(`⏳ Fetching candle data [${interval}] for last ${daysBack} days: ${formatDate(fromDate)} → ${formatDate(now)}`);
+    console.log(`⏳ Fetching candle data [${interval}] from ${formatDate(fromDate)} to ${formatDate(now)}...`);
 
     const candleRes = await axios.post(
       'https://apiconnect.angelone.in/rest/secure/angelbroking/historical/v1/getCandleData',
@@ -178,7 +161,7 @@ app.post('/api/angel/historical', async (req, res) => {
       return res.status(500).json({ error: 'No data from Angel API' });
     }
 
-    console.log(`✅ Candle data fetched for ${symbolWithEq} (${interval}, ${daysBack} days)`);
+    console.log(`✅ Candle data fetched for ${symbolWithEq} (${interval})`);
 
     res.json({
       symbol: symbolWithEq,
