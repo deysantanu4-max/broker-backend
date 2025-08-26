@@ -3,6 +3,13 @@ import axios from "axios";
 import crypto from "crypto";
 import https from "https";
 import WebSocket from "ws";
+import EventEmitter from "events"; // ✅ needed for broadcasting ticks
+
+// =========================
+// Tick storage + event bus
+// =========================
+const tickStore = {}; // { symbol: { ltp, change, percentChange, exch } }
+const tickEmitter = new EventEmitter();
 
 // =========================
 // Base32 decode for TOTP
@@ -51,15 +58,10 @@ function startSmartStream(clientCode, feedToken, apiKey, tokensToSubscribe) {
     console.log("✅ Connected to SmartAPI stream");
 
     const subscribeMessage = {
-      action: 1, // subscribe
+      action: 1,
       params: {
-        mode: 1, // 1 = LTP, 2 = Quote, 3 = SnapQuote
-        tokenList: [
-          {
-            exchangeType: 1, // 1 = NSE CM, 2 = NSE FO, 3 = BSE CM, etc.
-            tokens: tokensToSubscribe
-          }
-        ]
+        mode: 1, // LTP
+        tokenList: [{ exchangeType: 1, tokens: tokensToSubscribe }]
       }
     };
     ws.send(JSON.stringify(subscribeMessage));
@@ -68,7 +70,19 @@ function startSmartStream(clientCode, feedToken, apiKey, tokensToSubscribe) {
 
   ws.on("message", (msg) => {
     try {
-      console.log("📨 Tick:", msg.toString());
+      const data = JSON.parse(msg.toString());
+      if (data?.ltp && data?.token) {
+        // Store/update tick
+        tickStore[data.token] = {
+          symbol: data.token, // TODO: map token → symbol if you have master file
+          ltp: data.ltp,
+          change: data.netChange ?? 0,
+          percentChange: data.percentChange ?? 0,
+          exch: data.exch || "NSE"
+        };
+        tickEmitter.emit("tick", tickStore[data.token]);
+      }
+      console.log("📨 Tick stored:", data);
     } catch (err) {
       console.error("💥 Failed to parse tick:", err);
     }
@@ -85,10 +99,38 @@ function startSmartStream(clientCode, feedToken, apiKey, tokensToSubscribe) {
 }
 
 // =========================
+// Helper: compute rankings
+// =========================
+function getTop25() {
+  return Object.values(tickStore)
+    .sort((a, b) => Math.abs(b.percentChange) - Math.abs(a.percentChange))
+    .slice(0, 25);
+}
+function getGainers() {
+  return Object.values(tickStore).filter((s) => s.percentChange > 0);
+}
+function getLosers() {
+  return Object.values(tickStore).filter((s) => s.percentChange < 0);
+}
+function getNeutrals() {
+  return Object.values(tickStore).filter((s) => s.percentChange === 0);
+}
+
+// =========================
 // API Handler
 // =========================
 export default async function handler(req, res) {
   console.log("📩 /api/angel/live hit");
+
+  // Extra query support
+  if (req.method === "GET") {
+    const { type } = req.query;
+    if (type === "top25") return res.status(200).json(getTop25());
+    if (type === "gainers") return res.status(200).json(getGainers());
+    if (type === "losers") return res.status(200).json(getLosers());
+    if (type === "neutral") return res.status(200).json(getNeutrals());
+    return res.status(200).json({ ticks: tickStore });
+  }
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method Not Allowed" });
@@ -153,7 +195,6 @@ export default async function handler(req, res) {
       feedToken: feedToken,
       apiKey: apiKey
     });
-
   } catch (err) {
     if (err.response) {
       console.error("💥 Live API error:", err.response.status, err.response.data);
