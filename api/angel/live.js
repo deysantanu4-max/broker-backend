@@ -185,6 +185,9 @@ export default async function handler(req, res) {
 
     const feedToken = loginResp.data.data.feedToken;
 
+// =========================
+// Start Streaming
+// =========================
     // Start streaming for tokens (example: NIFTY 50)
     const tokensToSubscribe = ["26009"]; // Replace with your tokens
     startSmartStream(clientId, feedToken, apiKey, tokensToSubscribe);
