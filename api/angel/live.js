@@ -5,11 +5,11 @@ import https from "https";
 import WebSocket from "ws";
 import EventEmitter from "events";
 
-const tickStore = {}; // { token: { symbol, ltp, change, percentChange, exch } }
+const tickStore = {}; // { token: { symbol, ltp, change, percentChange, exch, open, high, low, close, prevClose } }
 const tickEmitter = new EventEmitter();
 
 // Cache login state
-let cachedLogin = null; // { feedToken, jwtToken, expiry }
+let cachedLogin = null;
 let ws = null;
 
 // =========================
@@ -59,11 +59,7 @@ async function loginOnce() {
   const password = process.env.ANGEL_PASSWORD;
   const totpSecret = process.env.ANGEL_TOTP_SECRET;
 
-  const payload = {
-    clientcode: clientId,
-    password: password,
-    totp: generateTOTP(totpSecret)
-  };
+  const payload = { clientcode: clientId, password, totp: generateTOTP(totpSecret) };
 
   const headers = {
     "X-PrivateKey": apiKey,
@@ -126,12 +122,18 @@ function startSmartStream(clientCode, feedToken, apiKey, tokensToSubscribe) {
     try {
       const data = JSON.parse(msg.toString());
       if (data?.ltp && data?.token) {
+        // Keep existing fields + new OHLC for top25 stocks
         tickStore[data.token] = {
           symbol: data.token,
           ltp: data.ltp,
           change: data.netChange ?? 0,
           percentChange: data.percentChange ?? 0,
-          exch: data.exch || "NSE"
+          exch: data.exch || "NSE",
+          open: data.open ?? data.ltp,
+          high: data.high ?? data.ltp,
+          low: data.low ?? data.ltp,
+          close: data.close ?? data.ltp,
+          prevClose: data.prevClose ?? data.ltp
         };
         tickEmitter.emit("tick", tickStore[data.token]);
       }
@@ -157,7 +159,10 @@ function startSmartStream(clientCode, feedToken, apiKey, tokensToSubscribe) {
 // Helpers
 // =========================
 function getTop25() {
-  return Object.values(tickStore).sort((a, b) => Math.abs(b.percentChange) - Math.abs(a.percentChange)).slice(0, 25);
+  // Sort by absolute percentChange and include OHLC data
+  return Object.values(tickStore)
+    .sort((a, b) => Math.abs(b.percentChange) - Math.abs(a.percentChange))
+    .slice(0, 25);
 }
 const getGainers = () => Object.values(tickStore).filter((s) => s.percentChange > 0);
 const getLosers = () => Object.values(tickStore).filter((s) => s.percentChange < 0);
@@ -185,10 +190,13 @@ export default async function handler(req, res) {
   try {
     const apiKey = process.env.ANGEL_API_KEY;
     const clientId = process.env.ANGEL_CLIENT_ID;
-    const tokensToSubscribe = ["26009"]; // example
+
+    // ===== NEW: dynamic top25 stock subscription =====
+    // Replace ["26009"] with top25Tokens fetched dynamically or preconfigured
+    const top25Tokens = process.env.TOP25_TOKENS?.split(",") || ["26009"];
 
     const session = await loginOnce();
-    startSmartStream(clientId, session.feedToken, apiKey, tokensToSubscribe);
+    startSmartStream(clientId, session.feedToken, apiKey, top25Tokens);
 
     return res.status(200).json({
       message: "✅ Streaming active",
