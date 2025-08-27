@@ -5,10 +5,11 @@ import https from "https";
 import WebSocket from "ws";
 import EventEmitter from "events";
 
+// Tick storage (stocks + indices)
 const tickStore = {}; // { token: { symbol, ltp, change, percentChange, exch, open, high, low, close, prevClose } }
 const tickEmitter = new EventEmitter();
 
-// Cache login state
+// Cached login + websocket
 let cachedLogin = null;
 let ws = null;
 
@@ -48,9 +49,7 @@ function generateTOTP(secret) {
 // =========================
 async function loginOnce() {
   const now = Date.now();
-  if (cachedLogin && now < cachedLogin.expiry) {
-    return cachedLogin;
-  }
+  if (cachedLogin && now < cachedLogin.expiry) return cachedLogin;
 
   console.log("🔑 Logging in to AngelOne...");
 
@@ -60,7 +59,6 @@ async function loginOnce() {
   const totpSecret = process.env.ANGEL_TOTP_SECRET;
 
   const payload = { clientcode: clientId, password, totp: generateTOTP(totpSecret) };
-
   const headers = {
     "X-PrivateKey": apiKey,
     "Content-Type": "application/json",
@@ -78,14 +76,12 @@ async function loginOnce() {
     { headers, httpsAgent: new https.Agent({ rejectUnauthorized: false }) }
   );
 
-  if (!loginResp.data?.data?.feedToken) {
-    throw new Error("Login failed: no feedToken");
-  }
+  if (!loginResp.data?.data?.feedToken) throw new Error("Login failed: no feedToken");
 
   cachedLogin = {
     feedToken: loginResp.data.data.feedToken,
     jwtToken: loginResp.data.data.jwtToken,
-    expiry: now + 11 * 60 * 60 * 1000 // 11h cache
+    expiry: now + 11 * 60 * 60 * 1000
   };
 
   console.log("✅ Logged in, feedToken cached until", new Date(cachedLogin.expiry).toISOString());
@@ -93,7 +89,7 @@ async function loginOnce() {
 }
 
 // =========================
-// Start WebSocket (only once)
+// Start WebSocket for stocks + indices
 // =========================
 function startSmartStream(clientCode, feedToken, apiKey, tokensToSubscribe) {
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -110,8 +106,11 @@ function startSmartStream(clientCode, feedToken, apiKey, tokensToSubscribe) {
     const subscribeMessage = {
       action: 1,
       params: {
-        mode: 1, // LTP
-        tokenList: [{ exchangeType: 1, tokens: tokensToSubscribe }]
+        mode: 1, // LTP mode
+        tokenList: [
+          { exchangeType: 1, tokens: tokensToSubscribe.NSE || [] },
+          { exchangeType: 2, tokens: tokensToSubscribe.BSE || [] }
+        ]
       }
     };
     ws.send(JSON.stringify(subscribeMessage));
@@ -122,7 +121,6 @@ function startSmartStream(clientCode, feedToken, apiKey, tokensToSubscribe) {
     try {
       const data = JSON.parse(msg.toString());
       if (data?.ltp && data?.token) {
-        // Keep existing fields + new OHLC for top25 stocks
         tickStore[data.token] = {
           symbol: data.token,
           ltp: data.ltp,
@@ -142,7 +140,7 @@ function startSmartStream(clientCode, feedToken, apiKey, tokensToSubscribe) {
     }
   });
 
-  ws.on("close", () => {
+  ws.on("close", async () => {
     console.log("❌ WebSocket closed, reconnecting in 5s...");
     setTimeout(async () => {
       const session = await loginOnce();
@@ -150,16 +148,13 @@ function startSmartStream(clientCode, feedToken, apiKey, tokensToSubscribe) {
     }, 5000);
   });
 
-  ws.on("error", (err) => {
-    console.error("💥 WebSocket error:", err);
-  });
+  ws.on("error", (err) => console.error("💥 WebSocket error:", err));
 }
 
 // =========================
 // Helpers
 // =========================
 function getTop25() {
-  // Sort by absolute percentChange and include OHLC data
   return Object.values(tickStore)
     .sort((a, b) => Math.abs(b.percentChange) - Math.abs(a.percentChange))
     .slice(0, 25);
@@ -168,41 +163,60 @@ const getGainers = () => Object.values(tickStore).filter((s) => s.percentChange 
 const getLosers = () => Object.values(tickStore).filter((s) => s.percentChange < 0);
 const getNeutrals = () => Object.values(tickStore).filter((s) => s.percentChange === 0);
 
+// Map exchange to token list
+function getTopTokensForExchange(exchange) {
+  const tokensEnv = process.env.TOP25_TOKENS || "";
+  const allTokens = tokensEnv.split(",").map((t) => t.trim());
+  if (exchange === "BSE") {
+    return allTokens.filter((t) => t.startsWith("B")); // example filter
+  }
+  return allTokens.filter((t) => !t.startsWith("B")); // default NSE
+}
+
 // =========================
 // API Handler
 // =========================
 export default async function handler(req, res) {
   console.log("📩 /api/angel/live hit");
 
-  if (req.method === "GET") {
-    const { type } = req.query;
-    if (type === "top25") return res.status(200).json(getTop25());
-    if (type === "gainers") return res.status(200).json(getGainers());
-    if (type === "losers") return res.status(200).json(getLosers());
-    if (type === "neutral") return res.status(200).json(getNeutrals());
-    return res.status(200).json({ ticks: tickStore });
-  }
-
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method Not Allowed" });
-  }
-
   try {
     const apiKey = process.env.ANGEL_API_KEY;
     const clientId = process.env.ANGEL_CLIENT_ID;
-
-    // ===== NEW: dynamic top25 stock subscription =====
-    // Replace ["26009"] with top25Tokens fetched dynamically or preconfigured
-    const top25Tokens = process.env.TOP25_TOKENS?.split(",") || ["26009"];
-
     const session = await loginOnce();
-    startSmartStream(clientId, session.feedToken, apiKey, top25Tokens);
 
-    return res.status(200).json({
-      message: "✅ Streaming active",
-      clientCode: clientId,
-      feedToken: session.feedToken
-    });
+    // ===== Dynamic exchange GET =====
+    if (req.method === "GET") {
+      const { type, exchange } = req.query;
+      if (!ws) {
+        const tokensToSubscribe = {
+          NSE: getTopTokensForExchange("NSE"),
+          BSE: getTopTokensForExchange("BSE")
+        };
+        startSmartStream(clientId, session.feedToken, apiKey, tokensToSubscribe);
+      }
+
+      if (type === "top25") return res.status(200).json(getTop25());
+      if (type === "gainers") return res.status(200).json(getGainers());
+      if (type === "losers") return res.status(200).json(getLosers());
+      if (type === "neutral") return res.status(200).json(getNeutrals());
+      return res.status(200).json({ ticks: tickStore });
+    }
+
+    // ===== POST: manually start streaming =====
+    if (req.method === "POST") {
+      const top25Tokens = {
+        NSE: getTopTokensForExchange("NSE"),
+        BSE: getTopTokensForExchange("BSE")
+      };
+      startSmartStream(clientId, session.feedToken, apiKey, top25Tokens);
+      return res.status(200).json({
+        message: "✅ Streaming active",
+        clientCode: clientId,
+        feedToken: session.feedToken
+      });
+    }
+
+    return res.status(405).json({ error: "Method Not Allowed" });
   } catch (err) {
     console.error("💥 Live API error:", err.message);
     return res.status(500).json({ error: err.message });
