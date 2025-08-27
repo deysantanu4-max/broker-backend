@@ -2,20 +2,10 @@
 import axios from "axios";
 import crypto from "crypto";
 import https from "https";
-import WebSocket from "ws";
-import EventEmitter from "events";
 
-// Tick storage (stocks + indices)
-const tickStore = {}; // { token: { symbol, ltp, change, percentChange, exch, open, high, low, close, prevClose } }
-const tickEmitter = new EventEmitter();
-
-// Cached login + websocket
+// Cache login state for 10–15 min
 let cachedLogin = null;
-let ws = null;
 
-// =========================
-// Base32 decode + TOTP
-// =========================
 function base32ToBuffer(base32) {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
   let bits = "", buffer = [];
@@ -44,30 +34,24 @@ function generateTOTP(secret) {
   return otp.toString().padStart(6, "0");
 }
 
-// =========================
-// Login & cache session
-// =========================
 async function loginOnce() {
   const now = Date.now();
   if (cachedLogin && now < cachedLogin.expiry) return cachedLogin;
 
   console.log("🔑 Logging in to AngelOne...");
-
   const apiKey = process.env.ANGEL_API_KEY;
   const clientId = process.env.ANGEL_CLIENT_ID;
   const password = process.env.ANGEL_PASSWORD;
   const totpSecret = process.env.ANGEL_TOTP_SECRET;
 
   const payload = { clientcode: clientId, password, totp: generateTOTP(totpSecret) };
+
   const headers = {
     "X-PrivateKey": apiKey,
     "Content-Type": "application/json",
     "Accept": "application/json",
     "X-UserType": "USER",
-    "X-SourceID": "WEB",
-    "X-ClientLocalIP": "192.168.1.1",
-    "X-ClientPublicIP": "122.176.75.22",
-    "X-MACAddress": "00:0a:95:9d:68:16"
+    "X-SourceID": "WEB"
   };
 
   const loginResp = await axios.post(
@@ -76,143 +60,120 @@ async function loginOnce() {
     { headers, httpsAgent: new https.Agent({ rejectUnauthorized: false }) }
   );
 
-  if (!loginResp.data?.data?.feedToken) throw new Error("Login failed: no feedToken");
+  if (!loginResp.data?.data?.feedToken) throw new Error("Login failed");
 
   cachedLogin = {
     feedToken: loginResp.data.data.feedToken,
     jwtToken: loginResp.data.data.jwtToken,
-    expiry: now + 11 * 60 * 60 * 1000
+    expiry: now + 10 * 60 * 1000 // cache 10 min
   };
 
-  console.log("✅ Logged in, feedToken cached until", new Date(cachedLogin.expiry).toISOString());
   return cachedLogin;
 }
 
-// =========================
-// Start WebSocket for stocks + indices
-// =========================
-function startSmartStream(clientCode, feedToken, apiKey, tokensToSubscribe) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    console.log("⚡ Reusing existing WebSocket");
-    return;
-  }
+// Fetch top 25 stocks + OHLC from Angel REST API
+async function fetchTop25Stocks() {
+  const session = await loginOnce();
+  const apiKey = process.env.ANGEL_API_KEY;
+  const jwtToken = session.jwtToken;
 
-  const wsUrl = `wss://smartapisocket.angelone.in/smart-stream?clientCode=${clientCode}&feedToken=${feedToken}&apiKey=${apiKey}`;
-  ws = new WebSocket(wsUrl);
+  // You can set NSE/BSE tokens as needed
+  const tokens = process.env.TOP25_TOKENS?.split(",") || ["26009"]; 
 
-  ws.on("open", () => {
-    console.log("✅ Connected to SmartAPI stream");
+  const payload = {
+    mode: "LTP",
+    exchangeTokens: { NSE: tokens.map(t => parseInt(t)) }
+  };
 
-    const subscribeMessage = {
-      action: 1,
-      params: {
-        mode: 1, // LTP mode
-        tokenList: [
-          { exchangeType: 1, tokens: tokensToSubscribe.NSE || [] },
-          { exchangeType: 2, tokens: tokensToSubscribe.BSE || [] }
-        ]
-      }
-    };
-    ws.send(JSON.stringify(subscribeMessage));
-    console.log("📡 Subscribed tokens:", tokensToSubscribe);
-  });
+  const headers = {
+    Authorization: `Bearer ${jwtToken}`,
+    "X-PrivateKey": apiKey,
+    "Content-Type": "application/json"
+  };
 
-  ws.on("message", (msg) => {
+  const resp = await axios.post(
+    "https://apiconnect.angelbroking.com/rest/secure/angelbroking/market/v1/quote",
+    payload,
+    { headers }
+  );
+
+  const data = resp.data?.data?.fetched || [];
+  return data.map(item => ({
+    token: item?.token?.toString(),
+    symbol: item?.symbol,
+    ltp: item?.ltp,
+    open: item?.open,
+    high: item?.high,
+    low: item?.low,
+    close: item?.close,
+    prevClose: item?.prevClose,
+    change: item?.netChange,
+    percentChange: item?.percentChange
+  }));
+}
+
+// Fetch indices (Nifty, BankNifty, Sensex)
+async function fetchIndices() {
+  const session = await loginOnce();
+  const apiKey = process.env.ANGEL_API_KEY;
+  const jwtToken = session.jwtToken;
+
+  const indices = [
+    { name: "NIFTY 50", token: 26000, exch: "NSE" },
+    { name: "BANKNIFTY", token: 26009, exch: "NSE" },
+    { name: "SENSEX", token: 99919000, exch: "BSE" }
+  ];
+
+  const result = [];
+
+  for (const idx of indices) {
     try {
-      const data = JSON.parse(msg.toString());
-      if (data?.ltp && data?.token) {
-        tickStore[data.token] = {
-          symbol: data.token,
-          ltp: data.ltp,
-          change: data.netChange ?? 0,
-          percentChange: data.percentChange ?? 0,
-          exch: data.exch || "NSE",
-          open: data.open ?? data.ltp,
-          high: data.high ?? data.ltp,
-          low: data.low ?? data.ltp,
-          close: data.close ?? data.ltp,
-          prevClose: data.prevClose ?? data.ltp
-        };
-        tickEmitter.emit("tick", tickStore[data.token]);
+      const payload = {
+        mode: "OHLC",
+        exchangeTokens: { [idx.exch]: [idx.token] }
+      };
+      const headers = {
+        Authorization: `Bearer ${jwtToken}`,
+        "X-PrivateKey": apiKey,
+        "Content-Type": "application/json"
+      };
+      const resp = await axios.post(
+        "https://apiconnect.angelbroking.com/rest/secure/angelbroking/market/v1/quote",
+        payload,
+        { headers }
+      );
+      const fetched = resp.data?.data?.fetched?.[0];
+      if (fetched) {
+        result.push({
+          name: idx.name,
+          token: idx.token,
+          ltp: fetched.ltp,
+          close: fetched.close,
+          prevClose: fetched.prevClose,
+          change: fetched.netChange,
+          percentChange: fetched.percentChange
+        });
       }
     } catch (err) {
-      console.error("💥 Parse tick error:", err);
+      console.error("Index fetch failed:", idx.name, err.message);
     }
-  });
-
-  ws.on("close", async () => {
-    console.log("❌ WebSocket closed, reconnecting in 5s...");
-    setTimeout(async () => {
-      const session = await loginOnce();
-      startSmartStream(clientCode, session.feedToken, apiKey, tokensToSubscribe);
-    }, 5000);
-  });
-
-  ws.on("error", (err) => console.error("💥 WebSocket error:", err));
-}
-
-// =========================
-// Helpers
-// =========================
-function getTop25() {
-  return Object.values(tickStore)
-    .sort((a, b) => Math.abs(b.percentChange) - Math.abs(a.percentChange))
-    .slice(0, 25);
-}
-const getGainers = () => Object.values(tickStore).filter((s) => s.percentChange > 0);
-const getLosers = () => Object.values(tickStore).filter((s) => s.percentChange < 0);
-const getNeutrals = () => Object.values(tickStore).filter((s) => s.percentChange === 0);
-
-// Map exchange to token list
-function getTopTokensForExchange(exchange) {
-  const tokensEnv = process.env.TOP25_TOKENS || "";
-  const allTokens = tokensEnv.split(",").map((t) => t.trim());
-  if (exchange === "BSE") {
-    return allTokens.filter((t) => t.startsWith("B")); // example filter
   }
-  return allTokens.filter((t) => !t.startsWith("B")); // default NSE
+
+  return result;
 }
 
-// =========================
 // API Handler
-// =========================
 export default async function handler(req, res) {
   console.log("📩 /api/angel/live hit");
 
   try {
-    const apiKey = process.env.ANGEL_API_KEY;
-    const clientId = process.env.ANGEL_CLIENT_ID;
-    const session = await loginOnce();
-
-    // ===== Dynamic exchange GET =====
     if (req.method === "GET") {
-      const { type, exchange } = req.query;
-      if (!ws) {
-        const tokensToSubscribe = {
-          NSE: getTopTokensForExchange("NSE"),
-          BSE: getTopTokensForExchange("BSE")
-        };
-        startSmartStream(clientId, session.feedToken, apiKey, tokensToSubscribe);
-      }
+      const top25 = await fetchTop25Stocks();
+      const indices = await fetchIndices();
 
-      if (type === "top25") return res.status(200).json(getTop25());
-      if (type === "gainers") return res.status(200).json(getGainers());
-      if (type === "losers") return res.status(200).json(getLosers());
-      if (type === "neutral") return res.status(200).json(getNeutrals());
-      return res.status(200).json({ ticks: tickStore });
-    }
-
-    // ===== POST: manually start streaming =====
-    if (req.method === "POST") {
-      const top25Tokens = {
-        NSE: getTopTokensForExchange("NSE"),
-        BSE: getTopTokensForExchange("BSE")
-      };
-      startSmartStream(clientId, session.feedToken, apiKey, top25Tokens);
       return res.status(200).json({
-        message: "✅ Streaming active",
-        clientCode: clientId,
-        feedToken: session.feedToken
+        top25,
+        indices
       });
     }
 
