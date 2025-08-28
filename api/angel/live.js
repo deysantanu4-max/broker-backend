@@ -8,7 +8,6 @@ import EventEmitter from "events";
 const tickStore = {}; // { token: { symbol, ltp, change, percentChange, exch } }
 const tickEmitter = new EventEmitter();
 
-// Cache login state
 let cachedLogin = null; // { feedToken, jwtToken, expiry }
 let ws = null;
 
@@ -154,14 +153,75 @@ function startSmartStream(clientCode, feedToken, apiKey, tokensToSubscribe) {
 }
 
 // =========================
-// Helpers
+// Helper to get top25 / gainers / losers / neutral
 // =========================
 function getTop25() {
-  return Object.values(tickStore).sort((a, b) => Math.abs(b.percentChange) - Math.abs(a.percentChange)).slice(0, 25);
+  return Object.values(tickStore)
+    .sort((a, b) => Math.abs(b.percentChange) - Math.abs(a.percentChange))
+    .slice(0, 25);
 }
 const getGainers = () => Object.values(tickStore).filter((s) => s.percentChange > 0);
 const getLosers = () => Object.values(tickStore).filter((s) => s.percentChange < 0);
 const getNeutrals = () => Object.values(tickStore).filter((s) => s.percentChange === 0);
+
+// =========================
+// Top25 token mapping (replace with real AngelOne token IDs)
+// =========================
+const NSE_TOP25 = {
+  "RELIANCE": "26000",
+  "TCS": "26001",
+  "INFY": "26002",
+  "HDFCBANK": "26003",
+  "ICICIBANK": "26004",
+  "SBIN": "26005",
+  "HINDUNILVR": "26006",
+  "KOTAKBANK": "26007",
+  "LT": "26008",
+  "BHARTIARTL": "26009",
+  "AXISBANK": "26010",
+  "BAJFINANCE": "26011",
+  "ITC": "26012",
+  "WIPRO": "26013",
+  "ASIANPAINT": "26014",
+  "ULTRACEMCO": "26015",
+  "MARUTI": "26016",
+  "SUNPHARMA": "26017",
+  "HCLTECH": "26018",
+  "POWERGRID": "26019",
+  "TITAN": "26020",
+  "NTPC": "26021",
+  "ONGC": "26022",
+  "JSWSTEEL": "26023",
+  "ADANIPORTS": "26024"
+};
+
+const BSE_TOP25 = {
+  "RELIANCE": "500325",
+  "HDFCBANK": "500180",
+  "INFY": "500209",
+  "ICICIBANK": "532174",
+  "SBIN": "500112",
+  "TCS": "532540",
+  "KOTAKBANK": "500247",
+  "HINDUNILVR": "500696",
+  "BHARTIARTL": "532454",
+  "BAJFINANCE": "500034",
+  "ITC": "500875",
+  "AXISBANK": "532215",
+  "LT": "500510",
+  "WIPRO": "507685",
+  "ASIANPAINT": "500820",
+  "ULTRACEMCO": "500440",
+  "MARUTI": "532500",
+  "SUNPHARMA": "524715",
+  "HCLTECH": "532281",
+  "POWERGRID": "532898",
+  "TITAN": "500114",
+  "NTPC": "532555",
+  "ONGC": "500312",
+  "JSWSTEEL": "500228",
+  "ADANIPORTS": "532921"
+};
 
 // =========================
 // API Handler
@@ -185,7 +245,10 @@ export default async function handler(req, res) {
   try {
     const apiKey = process.env.ANGEL_API_KEY;
     const clientId = process.env.ANGEL_CLIENT_ID;
-    const tokensToSubscribe = ["26009"]; // example
+
+    // Subscribe all top25 NSE + BSE tokens
+    const tokensToSubscribe = [...Object.values(NSE_TOP25), ...Object.values(BSE_TOP25)];
+    console.log("📡 Subscribing tokens:", tokensToSubscribe);
 
     const session = await loginOnce();
     startSmartStream(clientId, session.feedToken, apiKey, tokensToSubscribe);
