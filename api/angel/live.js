@@ -4,8 +4,6 @@ import crypto from "crypto";
 import https from "https";
 import WebSocket from "ws";
 import EventEmitter from "events";
-import fs from "fs";
-import path from "path";
 
 const tickStore = {}; // { token: { symbol, ltp, change, percentChange, exch } }
 const tickEmitter = new EventEmitter();
@@ -13,34 +11,6 @@ const tickEmitter = new EventEmitter();
 // Cache login state
 let cachedLogin = null; // { feedToken, jwtToken, expiry }
 let ws = null;
-let tokenMap = {}; // symbol -> token
-let reverseTokenMap = {}; // token -> symbol
-
-// =========================
-// Load ScripMaster.json (sync once)
-// =========================
-function loadScripMaster() {
-  try {
-    const filePath = path.join(process.cwd(), "public", "ScripMaster.json");
-    const raw = fs.readFileSync(filePath, "utf-8");
-    const instruments = JSON.parse(raw);
-
-    tokenMap = {};
-    reverseTokenMap = {};
-
-    instruments.forEach((inst) => {
-      if (inst.exch_seg === "NSE" && inst.symbol && inst.token) {
-        tokenMap[inst.symbol] = inst.token;
-        reverseTokenMap[inst.token] = inst.symbol;
-      }
-    });
-
-    console.log(`📥 Loaded ScripMaster locally: ${instruments.length} instruments`);
-    console.log(`✅ Built token maps: ${Object.keys(tokenMap).length} NSE symbols`);
-  } catch (err) {
-    console.error("💥 Failed to load ScripMaster.json:", err.message);
-  }
-}
 
 // =========================
 // Base32 decode + TOTP
@@ -129,19 +99,11 @@ async function loginOnce() {
 // =========================
 // Start WebSocket (only once)
 // =========================
-function startSmartStream(clientCode, feedToken, apiKey, symbols) {
+function startSmartStream(clientCode, feedToken, apiKey, tokensToSubscribe) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     console.log("⚡ Reusing existing WebSocket");
     return;
   }
-
-  // Convert symbols -> tokens
-  const tokensToSubscribe = symbols
-    .map((sym) => tokenMap[sym])
-    .filter(Boolean);
-
-  console.log("🔎 Subscribing to symbols:", symbols);
-  console.log("🔑 Mapped tokens:", tokensToSubscribe);
 
   const wsUrl = `wss://smartapisocket.angelone.in/smart-stream?clientCode=${clientCode}&feedToken=${feedToken}&apiKey=${apiKey}`;
   ws = new WebSocket(wsUrl);
@@ -164,9 +126,8 @@ function startSmartStream(clientCode, feedToken, apiKey, symbols) {
     try {
       const data = JSON.parse(msg.toString());
       if (data?.ltp && data?.token) {
-        const symbol = reverseTokenMap[data.token] || data.token;
         tickStore[data.token] = {
-          symbol,
+          symbol: data.token,
           ltp: data.ltp,
           change: data.netChange ?? 0,
           percentChange: data.percentChange ?? 0,
@@ -183,7 +144,7 @@ function startSmartStream(clientCode, feedToken, apiKey, symbols) {
     console.log("❌ WebSocket closed, reconnecting in 5s...");
     setTimeout(async () => {
       const session = await loginOnce();
-      startSmartStream(clientCode, session.feedToken, apiKey, symbols);
+      startSmartStream(clientCode, session.feedToken, apiKey, tokensToSubscribe);
     }, 5000);
   });
 
@@ -222,21 +183,17 @@ export default async function handler(req, res) {
   }
 
   try {
-    loadScripMaster();
     const apiKey = process.env.ANGEL_API_KEY;
     const clientId = process.env.ANGEL_CLIENT_ID;
-
-    // Example: subscribe to NIFTY + RELIANCE + TCS
-    const symbolsToSubscribe = ["NIFTY", "RELIANCE", "TCS"];
+    const tokensToSubscribe = ["26009"]; // example
 
     const session = await loginOnce();
-    startSmartStream(clientId, session.feedToken, apiKey, symbolsToSubscribe);
+    startSmartStream(clientId, session.feedToken, apiKey, tokensToSubscribe);
 
     return res.status(200).json({
       message: "✅ Streaming active",
       clientCode: clientId,
-      feedToken: session.feedToken,
-      subscribed: symbolsToSubscribe
+      feedToken: session.feedToken
     });
   } catch (err) {
     console.error("💥 Live API error:", err.message);
