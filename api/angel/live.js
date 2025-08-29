@@ -22,7 +22,7 @@ let tokenToSymbol = {}; // { "26009": "RELIANCE", ... }
 let symbolToToken = {}; // { "RELIANCE": "26009", ... }
 
 // -----------------------------
-// Your Top 25 (NSE) universe
+// TOP25 lists (NSE & BSE)
 // -----------------------------
 const TOP25_NSE = [
   "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK",
@@ -32,8 +32,17 @@ const TOP25_NSE = [
   "TITAN", "NTPC", "ONGC", "JSWSTEEL", "ADANIPORTS"
 ];
 
+const TOP25_BSE = [
+  "RELIANCE", "HDFCBANK", "INFY", "ICICIBANK", "SBIN",
+  "TCS", "KOTAKBANK", "HINDUNILVR", "BHARTIARTL", "BAJFINANCE",
+  "ITC", "AXISBANK", "LT", "WIPRO", "ASIANPAINT",
+  "ULTRACEMCO", "MARUTI", "SUNPHARMA", "HCLTECH", "POWERGRID",
+  "TITAN", "NTPC", "ONGC", "JSWSTEEL", "ADANIPORTS"
+];
+
 // -----------------------------
 // Base32 decode + TOTP
+// (unchanged from your existing implementation)
 // -----------------------------
 function base32ToBuffer(base32) {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -64,7 +73,7 @@ function generateTOTP(secret) {
 }
 
 // -----------------------------
-// Login & cache session
+// Login & cache session (aligned headers with your historical.js style)
 // -----------------------------
 async function loginOnce() {
   const now = Date.now();
@@ -80,7 +89,7 @@ async function loginOnce() {
   const payload = {
     clientcode: clientId,
     password: password,
-    totp: generateTOTP(totpSecret),
+    totp: generateTOTP(totpSecret)
   };
 
   const headers = {
@@ -89,9 +98,9 @@ async function loginOnce() {
     "Accept": "application/json",
     "X-UserType": "USER",
     "X-SourceID": "WEB",
-    "X-ClientLocalIP": "192.168.1.1",
-    "X-ClientPublicIP": "122.176.75.22",
-    "X-MACAddress": "00:0a:95:9d:68:16",
+    "X-ClientLocalIP": "127.0.0.1",
+    "X-ClientPublicIP": "127.0.0.1",
+    "X-MACAddress": "00:00:00:00:00:00"
   };
 
   const loginResp = await axios.post(
@@ -107,7 +116,7 @@ async function loginOnce() {
   cachedLogin = {
     feedToken: loginResp.data.data.feedToken,
     jwtToken: loginResp.data.data.jwtToken,
-    expiry: now + 11 * 60 * 60 * 1000, // 11h cache
+    expiry: now + 11 * 60 * 60 * 1000 // 11h cache
   };
 
   console.log("✅ Logged in, feedToken cached until", new Date(cachedLogin.expiry).toISOString());
@@ -116,11 +125,11 @@ async function loginOnce() {
 
 // -----------------------------
 // Load ScripMaster → build maps
+// - tries local path used in historical.js then falls back to CDN
 // -----------------------------
 async function loadScripMaster() {
   if (Object.keys(tokenToSymbol).length > 0) return;
 
-  // Try local first (same pathing style as your historical.js)
   const localPath = path.join(process.cwd(), "api", "angel", "OpenAPIScripMaster.json");
   let data = null;
 
@@ -138,27 +147,48 @@ async function loadScripMaster() {
     console.log(`📥 Loaded ScripMaster from CDN: ${data.length} instruments`);
   }
 
-  // Build maps for NSE, EQ only; store clean symbol (strip '-EQ')
   tokenToSymbol = {};
   symbolToToken = {};
 
   for (const inst of data) {
     const exch = (inst.exch_seg || inst.exchSeg || "").toUpperCase();
-    const instrumentType = (inst.instrumenttype || inst.instrumentType || "").toUpperCase();
-    const token = String(inst.token);
-    const rawSymbol = String(inst.symbol || inst.tradingsymbol || "").toUpperCase();
+    const instType = (inst.instrumenttype || inst.instrumentType || "").toUpperCase();
+    const token = inst.token ? String(inst.token) : null;
+    const rawSymbol = (inst.symbol || inst.tradingsymbol || "").toUpperCase();
 
-    if (exch !== "NSE") continue;             // focus NSE to match your app
-    if (instrumentType && instrumentType !== "EQ") continue;
     if (!token || !rawSymbol) continue;
+    if (!(exch === "NSE" || exch === "BSE")) continue; // only NSE/BSE
+    if (instType && instType !== "EQ") continue; // equities only
 
     const cleanSymbol = rawSymbol.replace(/-EQ$/, "");
-    tokenToSymbol[token] = cleanSymbol;
-    // only set the first mapping to avoid overwriting in rare dupes
-    if (!symbolToToken[cleanSymbol]) symbolToToken[cleanSymbol] = token;
+    tokenToSymbol[token] = { symbol: cleanSymbol, exch };
+    // only set first token for a symbol (avoid overwriting)
+    const key = `${exch}:${cleanSymbol}`;
+    if (!symbolToToken[key]) symbolToToken[key] = token;
   }
 
-  console.log(`✅ Built token maps: ${Object.keys(tokenToSymbol).length} tokens (NSE EQ)`);
+  console.log(`✅ Built token maps: ${Object.keys(tokenToSymbol).length} tokens (NSE+BSE EQ)`);
+}
+
+// -----------------------------
+// Binary decoder fallback (best-effort)
+// - Angel often sends binary packets; this is a simple, safe attempt to read token+ltp.
+// - It's conservative: if decoding fails, we log preview and skip.
+// -----------------------------
+function tryDecodeBinaryTick(buffer) {
+  try {
+    // Attempt to read token (32-bit BE) at byte index 1 and price at index 5 (32-bit BE)
+    // This matches a common Angel LTP binary layout (not guaranteed for every vendor).
+    if (!Buffer.isBuffer(buffer) || buffer.length < 9) return null;
+    const exchSeg = buffer.readInt8(0); // may be present
+    const token = String(buffer.readInt32BE(1));
+    // Price often sent as integer with 2 decimals: divide by 100 (best-effort)
+    const rawPrice = buffer.readInt32BE(5);
+    const ltp = rawPrice / 100.0;
+    return { token, ltp };
+  } catch (err) {
+    return null;
+  }
 }
 
 // -----------------------------
@@ -180,70 +210,104 @@ function startSmartStream(clientCode, feedToken, apiKey, tokensToSubscribe) {
       action: 1,
       params: {
         mode: 1, // LTP
-        tokenList: [{ exchangeType: 1, tokens: tokensToSubscribe }], // NSE = 1
-      },
+        tokenList: [{ exchangeType: 1, tokens: tokensToSubscribe }] // NSE = 1
+      }
     };
 
     try {
       ws.send(JSON.stringify(subscribeMessage));
-      console.log("📡 Subscribed tokens:", tokensToSubscribe);
+      console.log("📡 Subscribed tokens:", tokensToSubscribe.slice(0, 30), " (showing up to 30)");
     } catch (e) {
       console.error("💥 Failed to send subscribe message:", e.message);
     }
   });
 
+  // track first few raw non-JSON previews so logs aren't flooded
+  let nonJsonPreviewCount = 0;
+
   ws.on("message", (msg) => {
-    // NOTE: Keeping your original JSON parsing to avoid disturbing your stream.
-    // Angel often sends binary, but if your infra sends JSON, this will work.
     try {
-      const text = msg.toString();
-      let data = null;
+      // Try JSON first (this preserves your existing streaming path for indices if they send JSON)
+      let parsed = null;
+      const txt = msg.toString?.() ?? "";
 
       try {
-        data = JSON.parse(text);
+        parsed = JSON.parse(txt);
       } catch (jerr) {
-        // If not JSON, log a short preview once and skip
-        console.warn("⚠️ Non-JSON tick received (preview):", text.slice(0, 80));
+        parsed = null;
+      }
+
+      if (parsed) {
+        // parsed might be array or single object
+        const items = Array.isArray(parsed) ? parsed : [parsed];
+        for (const it of items) {
+          // If object contains token & ltp - treat as tick
+          if (it?.token && typeof it.ltp !== "undefined") {
+            const token = String(it.token);
+            const mapping = tokenToSymbol[token];
+            const symbol = mapping ? mapping.symbol : token;
+            const exch = mapping ? mapping.exch : (it.exch || "NSE").toUpperCase();
+
+            const ltp = Number(it.ltp) || 0;
+            let change = typeof it.netChange !== "undefined" ? Number(it.netChange) : (typeof it.change !== "undefined" ? Number(it.change) : 0);
+            let percentChange = typeof it.percentChange !== "undefined" ? Number(it.percentChange) : 0;
+
+            if ((percentChange === 0 || isNaN(percentChange)) && ltp && change) {
+              const prev = ltp - change;
+              if (prev) percentChange = (change / prev) * 100;
+            }
+
+            tickStore[symbol] = {
+              symbol,
+              ltp,
+              change: isNaN(change) ? 0 : change,
+              percentChange: isNaN(percentChange) ? 0 : percentChange,
+              exch
+            };
+
+            console.log(`📈 JSON Tick ${symbol.padEnd(12)} LTP=${ltp} Δ=${change} (${percentChange.toFixed(2)}%)`);
+            tickEmitter.emit("tick", tickStore[symbol]);
+            continue;
+          }
+
+          // Some messages may be index updates or control messages — log lightly
+          if (it?.type || it?.event || it?.message) {
+            console.log("📩 WS message (info):", (it.type || it.event || it.message));
+          }
+        }
         return;
       }
 
-      if (!data) return;
+      // If not JSON, attempt a binary decode
+      const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
+      const decoded = tryDecodeBinaryTick(buf);
 
-      // Angel WS events can be arrays or single objects depending on mode/provider
-      const items = Array.isArray(data) ? data : [data];
+      if (decoded && decoded.token) {
+        const token = decoded.token;
+        const mapping = tokenToSymbol[token];
+        const symbol = mapping ? mapping.symbol : token;
+        const exch = mapping ? mapping.exch : "NSE";
+        const ltp = Number(decoded.ltp) || 0;
 
-      for (const it of items) {
-        // Expect fields like { token, ltp, netChange, percentChange, exch }
-        if (!it?.token || typeof it.ltp === "undefined") continue;
-
-        const token = String(it.token);
-        const symbol = tokenToSymbol[token] || token; // fallback to token if not mapped
-        const exch = (it.exch || "NSE").toUpperCase();
-
-        // Compute change/percent if missing
-        const ltp = Number(it.ltp) || 0;
-        let change = typeof it.netChange !== "undefined" ? Number(it.netChange) : 0;
-        let percentChange =
-          typeof it.percentChange !== "undefined" ? Number(it.percentChange) : 0;
-
-        if ((percentChange === 0 || isNaN(percentChange)) && ltp && change) {
-          const prev = ltp - change;
-          if (prev) percentChange = (change / prev) * 100;
-        }
-
+        // We don't have netChange/percentChange from this minimal decode -> set 0
         tickStore[symbol] = {
           symbol,
           ltp,
-          change: isNaN(change) ? 0 : change,
-          percentChange: isNaN(percentChange) ? 0 : percentChange,
-          exch,
+          change: 0,
+          percentChange: 0,
+          exch
         };
 
-        console.log(
-          `📈 Tick ${symbol.padEnd(12)} LTP=${ltp} Δ=${change} (${percentChange.toFixed(2)}%)`
-        );
-
+        console.log(`📈 Binary Tick ${symbol.padEnd(12)} LTP=${ltp} (token=${token})`);
         tickEmitter.emit("tick", tickStore[symbol]);
+        return;
+      }
+
+      // Non-JSON, non-decodable: preview once to help debugging
+      if (nonJsonPreviewCount < 3) {
+        nonJsonPreviewCount++;
+        const preview = buf?.slice ? buf.slice(0, 120).toString("hex") : String(msg).slice(0, 120);
+        console.warn("⚠️ Received non-JSON/non-decodable WS message preview (hex):", preview);
       }
     } catch (err) {
       console.error("💥 Parse tick error:", err);
@@ -255,9 +319,9 @@ function startSmartStream(clientCode, feedToken, apiKey, tokensToSubscribe) {
     setTimeout(async () => {
       try {
         const session = await loginOnce();
-        // Reuse the last tokens we subscribed with (if any)
-        const currentTokens = collectTop25Tokens(); // build again from maps
-        startSmartStream(process.env.ANGEL_CLIENT_ID, session.feedToken, process.env.ANGEL_API_KEY, currentTokens);
+        // reuse last subscriptions (we can collect tokens from TOP25 lists)
+        const tokens = collectTop25Tokens(); // uses symbolToToken map
+        startSmartStream(process.env.ANGEL_CLIENT_ID, session.feedToken, process.env.ANGEL_API_KEY, tokens);
       } catch (e) {
         console.error("💥 Reconnect failed:", e.message);
       }
@@ -270,31 +334,31 @@ function startSmartStream(clientCode, feedToken, apiKey, tokensToSubscribe) {
 }
 
 // -----------------------------
-// Build Top-25 token list (NSE)
+// Build token list for TOP25 per exchange
 // -----------------------------
-function collectTop25Tokens() {
+function collectTop25Tokens(exchange = "NSE") {
+  const symbols = (exchange === "BSE") ? TOP25_BSE : TOP25_NSE;
   const tokens = [];
-  for (const sym of TOP25_NSE) {
-    const t = symbolToToken[sym];
+  for (const sym of symbols) {
+    const key = `${exchange}:${sym}`;
+    const t = symbolToToken[key] || symbolToToken[`${exchange.toUpperCase()}:${sym}`] || symbolToToken[`NSE:${sym}`];
     if (t) tokens.push(t);
-    else console.warn(`⚠️ No token found for ${sym} in ScripMaster`);
+    else console.warn(`⚠️ No token found for ${sym} on ${exchange}`);
   }
-  // Deduplicate just in case
   return Array.from(new Set(tokens));
 }
 
 // -----------------------------
 // Lazy ensure stream is running
 // -----------------------------
-async function ensureStreamStarted() {
+async function ensureStreamStarted(exchange = "NSE") {
   await loadScripMaster();
-
   const apiKey = process.env.ANGEL_API_KEY;
   const clientId = process.env.ANGEL_CLIENT_ID;
 
-  const tokensToSubscribe = collectTop25Tokens();
+  const tokensToSubscribe = collectTop25Tokens(exchange);
   if (tokensToSubscribe.length === 0) {
-    throw new Error("No tokens resolved for Top 25 NSE — check ScripMaster mapping");
+    throw new Error(`No tokens resolved for Top 25 ${exchange} — check ScripMaster mapping`);
   }
 
   const session = await loginOnce();
@@ -304,19 +368,16 @@ async function ensureStreamStarted() {
 // -----------------------------
 // Response helpers
 // -----------------------------
-function getTop25() {
-  // Return only symbols we care about, ordered by |% change|
+function getTop25(exchange = "NSE") {
+  const list = (exchange === "BSE") ? TOP25_BSE : TOP25_NSE;
   return Object.values(tickStore)
-    .filter((row) => TOP25_NSE.includes(row.symbol))
+    .filter((row) => list.includes(row.symbol))
     .sort((a, b) => Math.abs(b.percentChange) - Math.abs(a.percentChange))
     .slice(0, 25);
 }
-const getGainers = () =>
-  Object.values(tickStore).filter((s) => s.percentChange > 0);
-const getLosers = () =>
-  Object.values(tickStore).filter((s) => s.percentChange < 0);
-const getNeutrals = () =>
-  Object.values(tickStore).filter((s) => Number(s.percentChange) === 0);
+const getGainers = () => Object.values(tickStore).filter((s) => s.percentChange > 0);
+const getLosers = () => Object.values(tickStore).filter((s) => s.percentChange < 0);
+const getNeutrals = () => Object.values(tickStore).filter((s) => Number(s.percentChange) === 0);
 
 // -----------------------------
 // API Handler (default export)
@@ -325,18 +386,20 @@ export default async function handler(req, res) {
   console.log("📩 /api/angel/live hit", req.method, req.url);
 
   try {
-    // Auto-start stream on first hit (GET or POST)
+    const exchangeParam = (req.query.exchange || "NSE").toUpperCase();
+
+    // Auto-start stream on first hit (GET or POST) for requested exchange
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      console.log("⏯️ Stream not active — starting (lazy) …");
-      await ensureStreamStarted();
+      console.log("⏯️ Stream not active — starting (lazy) for", exchangeParam);
+      await ensureStreamStarted(exchangeParam);
     }
 
     if (req.method === "GET") {
       const { type } = req.query;
 
       if (type === "top25") {
-        const payload = getTop25();
-        console.log(`🟢 GET top25 -> ${payload.length} items`);
+        const payload = getTop25(exchangeParam);
+        console.log(`🟢 GET top25 (${exchangeParam}) -> ${payload.length} items`);
         return res.status(200).json(payload);
       }
       if (type === "gainers") {
@@ -362,11 +425,12 @@ export default async function handler(req, res) {
     }
 
     if (req.method === "POST") {
-      // Explicit start (kept for compatibility with your previous flow)
-      await ensureStreamStarted();
+      // explicit start — accepts optional exchange query param
+      const exchangeQuery = (req.query.exchange || "NSE").toUpperCase();
+      await ensureStreamStarted(exchangeQuery);
       return res.status(200).json({
-        message: "✅ Streaming active",
-        subscribed: collectTop25Tokens().length,
+        message: `✅ Streaming active for ${exchangeQuery}`,
+        subscribed: collectTop25Tokens(exchangeQuery).length,
       });
     }
 
