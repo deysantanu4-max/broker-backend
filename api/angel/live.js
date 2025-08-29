@@ -7,7 +7,7 @@ import https from "https";
 import fs from "fs";
 import path from "path";
 import WebSocket from "ws";
-import { getAngelTokens } from "./login-angel-mpin.js"; // same helper used in historical.js
+import { getAngelTokens } from "./login-angel-mpin.js";
 
 dotenv.config();
 
@@ -26,11 +26,11 @@ if (!CLIENT_ID || !API_KEY) {
 let scripMasterCache = null;
 let ws = null;
 let isStreaming = false;
-const latestData = { indices: {}, stocks: {} }; // returned to UI
-const tokenToInstrument = {}; // token -> { symbol, exch_seg, token }
-const symbolKeyToToken = {}; // "NSE:RELIANCE" -> token
+const latestData = { indices: {}, stocks: {} };
+const tokenToInstrument = {};
+const symbolKeyToToken = {};
 
-// Top-25 lists (your app's universe)
+// Top-25 lists
 const TOP25_NSE = [
   "RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK",
   "SBIN","HINDUNILVR","KOTAKBANK","LT","BHARTIARTL",
@@ -46,12 +46,10 @@ const TOP25_BSE = [
   "TITAN","NTPC","ONGC","JSWSTEEL","ADANIPORTS"
 ];
 
-// Exchange mapping for SmartAPI subscribe payloads
-// Common SmartAPI exchangeType (examples):
-// 1 = indices, 2 = NSE equity, 3 = BSE equity
+// Exchange mapping
 const EXCHANGE_TYPE = { INDICES: 1, NSE_EQ: 2, BSE_EQ: 3 };
 
-// -------------------- ScripMaster loader (same style as historical.js) --------------------
+// -------------------- Load ScripMaster --------------------
 async function loadScripMaster(exchange = "NSE") {
   try {
     if (!scripMasterCache) {
@@ -62,7 +60,6 @@ async function loadScripMaster(exchange = "NSE") {
       console.log(`✅ Loaded ${scripMasterCache.length} instruments from local file`);
     }
 
-    // If local file contains the requested exchange, return it
     const hasExchange = scripMasterCache.some(inst => (inst.exch_seg || "").toUpperCase() === exchange.toUpperCase());
     if (hasExchange) {
       console.log(`📄 Found exchange ${exchange} in local file`);
@@ -74,7 +71,6 @@ async function loadScripMaster(exchange = "NSE") {
     console.warn("⚠️ Failed to load local ScripMaster:", err.message);
   }
 
-  // Fallback: fetch from Angel CDN
   console.log("🌐 Fetching ScripMaster from Angel CDN...");
   const res = await axios.get("https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json", {
     httpsAgent: new https.Agent({ rejectUnauthorized: false })
@@ -84,16 +80,14 @@ async function loadScripMaster(exchange = "NSE") {
   return scripMasterCache;
 }
 
-// Build token maps (tokenToInstrument and symbolKeyToToken)
+// -------------------- Build token maps --------------------
 async function buildTokenMaps() {
   if (Object.keys(tokenToInstrument).length > 0 && Object.keys(symbolKeyToToken).length > 0) return;
 
-  const scrips = await loadScripMaster("NSE"); // loads cache or CDN
-  tokenToInstrument.__built = false;
+  const scrips = await loadScripMaster("NSE");
 
-  tokenToInstrument && Object.keys(tokenToInstrument).forEach(k => delete tokenToInstrument[k]);
-  Object.keys(tokenToInstrument).length = 0;
-  Object.keys(symbolKeyToToken).length = 0;
+  Object.keys(tokenToInstrument).forEach(k => delete tokenToInstrument[k]);
+  Object.keys(symbolKeyToToken).forEach(k => delete symbolKeyToToken[k]);
 
   for (const inst of scrips) {
     const exch = (inst.exch_seg || "").toUpperCase();
@@ -102,8 +96,8 @@ async function buildTokenMaps() {
     const rawSymbol = (inst.symbol || inst.tradingsymbol || "").toUpperCase();
 
     if (!token || !rawSymbol) continue;
-    if (!(exch === "NSE" || exch === "BSE")) continue; // limit to exchanges you care about
-    if (instType && instType !== "EQ") continue; // equities only
+    if (!(exch === "NSE" || exch === "BSE")) continue;
+    if (instType && instType !== "EQ") continue;
 
     const cleanSymbol = rawSymbol.replace(/-EQ$/, "");
     tokenToInstrument[token] = { token, symbol: cleanSymbol, exch_seg: exch };
@@ -111,27 +105,26 @@ async function buildTokenMaps() {
     if (!symbolKeyToToken[key]) symbolKeyToToken[key] = token;
   }
 
-  console.log(`✅ Built token maps: ${Object.keys(tokenToInstrument).length} tokens (NSE+BSE EQ)`);
-  tokenToInstrument.__built = true;
+  console.log(`✅ Built token maps: ${Object.keys(tokenToInstrument).length} tokens`);
 }
 
-// -------------------- Helpers to resolve token by exchange+symbol --------------------
+// -------------------- Resolve token --------------------
 async function resolveTokenFor(exchange, symbol) {
   await buildTokenMaps();
   const key = `${exchange.toUpperCase()}:${symbol.toUpperCase()}`;
   const foundToken = symbolKeyToToken[key];
   if (foundToken) return tokenToInstrument[foundToken];
-  // fallback: try across exchanges (prefer NSE)
+
   const altKey = `NSE:${symbol.toUpperCase()}`;
   if (symbolKeyToToken[altKey]) return tokenToInstrument[symbolKeyToToken[altKey]];
+
   return null;
 }
 
-// -------------------- Binary decode fallback (best-effort) --------------------
+// -------------------- Binary decode fallback --------------------
 function tryDecodeBinaryTick(buffer) {
   try {
     if (!Buffer.isBuffer(buffer) || buffer.length < 9) return null;
-    // Many SmartAPI binary packets include token as Int32BE at byte 1 and price at byte 5 (heuristic).
     const token = String(buffer.readInt32BE(1));
     const rawPrice = buffer.readInt32BE(5);
     const ltp = rawPrice / 100.0;
@@ -145,10 +138,8 @@ function tryDecodeBinaryTick(buffer) {
 let lastSubscribedTokenGroups = null;
 
 async function startSmartStream(exchange = "NSE", symbols = TOP25_NSE) {
-  // Build maps
   await buildTokenMaps();
 
-  // Resolve tokens for requested symbols
   const resolved = [];
   for (const sym of symbols) {
     const inst = await resolveTokenFor(exchange, sym);
@@ -156,70 +147,35 @@ async function startSmartStream(exchange = "NSE", symbols = TOP25_NSE) {
     else console.warn(`⚠️ Token not found for ${exchange}:${sym}`);
   }
 
-  if (resolved.length === 0) {
-    throw new Error(`No tokens resolved for Top25 ${exchange}`);
-  }
+  if (resolved.length === 0) throw new Error(`No tokens resolved for Top25 ${exchange}`);
 
-  // Pre-populate latestData.stocks so UI can display 25 items immediately
-  latestData.stocks = {}; // reset / rebuild
+  latestData.stocks = {};
   resolved.forEach(inst => {
     const key = `${inst.exch_seg}:${inst.symbol}`;
-    latestData.stocks[key] = {
-      symbol: inst.symbol,
-      exch: inst.exch_seg,
-      token: inst.token,
-      ltp: 0,
-      change: 0,
-      percentChange: 0
-    };
+    latestData.stocks[key] = { symbol: inst.symbol, exch: inst.exch_seg, token: inst.token, ltp: 0, change: 0, percentChange: 0 };
   });
 
-  // Build grouped tokenList for subscribe:
-  // SmartAPI expects exchangeType numeric values; group tokens by exchange type
-  const byExType = {}; // exType -> tokens[]
+  console.log("🔹 Resolved tokens for subscription:", resolved.map(r => `${r.exch_seg}:${r.symbol}(${r.token})`).join(", "));
+
+  const byExType = {};
   for (const inst of resolved) {
     const exType = inst.exch_seg === "BSE" ? EXCHANGE_TYPE.BSE_EQ : EXCHANGE_TYPE.NSE_EQ;
     if (!byExType[exType]) byExType[exType] = [];
     byExType[exType].push(inst.token);
   }
 
-  // Build tokenList groups (SmartAPI tokenList is array of { exchangeType, tokens: [] })
-  const tokenListGroups = Object.entries(byExType).map(([exType, tokens]) => ({
-    exchangeType: Number(exType),
-    tokens
-  }));
-
+  const tokenListGroups = Object.entries(byExType).map(([exType, tokens]) => ({ exchangeType: Number(exType), tokens }));
   lastSubscribedTokenGroups = tokenListGroups;
 
-  // If WS already open, just (re)subscribe by sending subscribe messages
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    console.log("⚡ Re-using WS - sending subscribe batches");
-    tokenListGroups.forEach((grp, idx) => {
-      const subscribeMessage = { action: 1, params: { mode: 1, tokenList: [grp] } };
-      try { ws.send(JSON.stringify(subscribeMessage)); }
-      catch (e) { console.error("💥 subscribe send failed:", e.message); }
-    });
-    return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    const { feedToken } = await getAngelTokens();
+    const wsUrl = `wss://smartapisocket.angelone.in/smart-stream?clientCode=${CLIENT_ID}&feedToken=${feedToken}&apiKey=${API_KEY}`;
+    ws = new WebSocket(wsUrl);
   }
 
-  // Else create the WebSocket
-  const tokensForUrl = await (async () => {
-    try {
-      const { feedToken } = await getAngelTokens();
-      return feedToken;
-    } catch (e) {
-      console.error("❌ getAngelTokens failed:", e.message);
-      throw e;
-    }
-  })();
-
-  const wsUrl = `wss://smartapisocket.angelone.in/smart-stream?clientCode=${CLIENT_ID}&feedToken=${tokensForUrl}&apiKey=${API_KEY}`;
-  ws = new WebSocket(wsUrl);
-
   ws.on("open", () => {
-    console.log("✅ Connected to SmartAPI stream (smart-stream)");
+    console.log("✅ Connected to SmartAPI stream");
 
-    // Send subscribe for each group (batching safe)
     tokenListGroups.forEach((grp, idx) => {
       const subscribeMessage = { action: 1, params: { mode: 1, tokenList: [grp] } };
       try {
@@ -229,92 +185,63 @@ async function startSmartStream(exchange = "NSE", symbols = TOP25_NSE) {
         console.error("💥 Failed to send subscribe message:", e.message);
       }
     });
-
-    // Also subscribe to indices if you want indices streaming in same WS (example tokens must be resolved to tokenIDs if needed)
-    // Optionally: subscribe index token(s) here (left out because index token mapping may differ)
     isStreaming = true;
   });
 
   ws.on("message", (msg) => {
     try {
-      // try JSON decode
       let parsed = null;
-      const txt = (typeof msg.toString === "function") ? msg.toString() : null;
-      try { parsed = txt ? JSON.parse(txt) : null; } catch (e) { parsed = null; }
+      try { parsed = JSON.parse(msg.toString()); } catch (e) { parsed = null; }
+      const ticks = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);
 
-      if (parsed) {
-        // parsed may be control or array; normalize into array of ticks
-        const items = Array.isArray(parsed) ? parsed : [parsed];
-        for (const it of items) {
-          // Typical tick shape: { token, ltp, netChange, percentChange, exch }
-          if (it?.token && typeof it.ltp !== "undefined") {
-            const tok = String(it.token);
-            const inst = tokenToInstrument[tok];
-            const symbol = inst ? `${inst.exch_seg}:${inst.symbol}` : tok;
-            const ltp = Number(it.ltp) || 0;
-            const change = (typeof it.netChange !== "undefined") ? Number(it.netChange) : (typeof it.change !== "undefined" ? Number(it.change) : 0);
-            const percentChange = (typeof it.percentChange !== "undefined") ? Number(it.percentChange) : (change && ltp ? (change / (ltp - change)) * 100 : 0);
+      ticks.forEach(it => {
+        if (!it?.token || typeof it.ltp === "undefined") return;
 
-            // Update latestData if present
-            if (latestData.stocks[symbol]) {
-              latestData.stocks[symbol].ltp = ltp;
-              latestData.stocks[symbol].change = isNaN(change) ? 0 : change;
-              latestData.stocks[symbol].percentChange = isNaN(percentChange) ? 0 : percentChange;
-            } else {
-              // If not in top25 prepopulated, optionally keep in tick map
-              latestData.stocks[symbol] = {
-                symbol,
-                exch: inst ? inst.exch_seg : (it.exch || "NSE"),
-                token: tok,
-                ltp,
-                change,
-                percentChange
-              };
-            }
-
-            console.log(`📈 Tick ${symbol} LTP=${ltp} Δ=${change} (%${(latestData.stocks[symbol].percentChange||0).toFixed(2)})`);
-          } else {
-            // control / other messages
-            // lightweight logging
-            if (it?.type || it?.event || it?.message) {
-              console.log("📩 WS message:", it.type || it.event || it.message);
-            }
-          }
-        }
-        return;
-      }
-
-      // not JSON => try binary decode heuristic
-      const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
-      const decoded = tryDecodeBinaryTick(buf);
-      if (decoded && decoded.token) {
-        const tok = decoded.token;
+        const tok = String(it.token);
         const inst = tokenToInstrument[tok];
-        const symbol = inst ? `${inst.exch_seg}:${inst.symbol}` : tok;
-        const ltp = Number(decoded.ltp) || 0;
-        if (latestData.stocks[symbol]) {
-          latestData.stocks[symbol].ltp = ltp;
-        } else {
-          latestData.stocks[symbol] = { symbol, exch: inst ? inst.exch_seg : "NSE", token: tok, ltp, change: 0, percentChange: 0 };
-        }
-        console.log(`📈 Binary tick ${symbol} LTP=${ltp}`);
-        return;
-      }
+        const key = inst ? `${inst.exch_seg}:${inst.symbol}` : tok;
 
-      // otherwise ignore or lightly preview
+        if (!latestData.stocks[key]) {
+          console.warn(`⚠️ Tick received for unknown key ${key}, creating entry.`);
+          latestData.stocks[key] = { symbol: inst?.symbol || tok, exch: inst?.exch_seg || "NSE", token: tok, ltp: 0, change: 0, percentChange: 0 };
+        }
+
+        const change = typeof it.netChange !== "undefined" ? Number(it.netChange) : 0;
+        const ltp = Number(it.ltp) || 0;
+        const percentChange = change && ltp ? (change / (ltp - change)) * 100 : 0;
+
+        latestData.stocks[key].ltp = ltp;
+        latestData.stocks[key].change = change;
+        latestData.stocks[key].percentChange = percentChange;
+
+        console.log(`📈 Tick ${key} LTP=${ltp} Δ=${change} (%${percentChange.toFixed(2)})`);
+      });
+
+      // fallback binary
+      if (!ticks.length) {
+        const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
+        const decoded = tryDecodeBinaryTick(buf);
+        if (decoded && decoded.token) {
+          const tok = decoded.token;
+          const inst = tokenToInstrument[tok];
+          const key = inst ? `${inst.exch_seg}:${inst.symbol}` : tok;
+          if (!latestData.stocks[key]) latestData.stocks[key] = { symbol: inst?.symbol || tok, exch: inst?.exch_seg || "NSE", token: tok, ltp: 0, change: 0, percentChange: 0 };
+          latestData.stocks[key].ltp = decoded.ltp;
+          console.log(`📈 Binary tick ${key} LTP=${decoded.ltp}`);
+        }
+      }
     } catch (err) {
       console.error("💥 Parse tick error:", err.message || err);
     }
   });
 
   ws.on("close", async () => {
-    console.warn("❌ WebSocket closed — will attempt reconnect in 5s");
+    console.warn("❌ WebSocket closed — reconnecting in 5s");
     isStreaming = false;
     ws = null;
     setTimeout(async () => {
       try {
         if (lastSubscribedTokenGroups) {
-          // rebuild a symbols array from token groups and restart
           const tokens = lastSubscribedTokenGroups.flatMap(g => g.tokens);
           const symbolsFromTokens = tokens.map(t => {
             const inst = tokenToInstrument[t];
@@ -329,46 +256,31 @@ async function startSmartStream(exchange = "NSE", symbols = TOP25_NSE) {
   });
 
   ws.on("error", (err) => {
-    console.error("💥 WebSocket error:", err && err.message ? err.message : err);
+    console.error("💥 WebSocket error:", err?.message || err);
     isStreaming = false;
   });
-
-  // Save token->instrument mapping for quick lookup on ticks
-  for (const r of resolved) tokenToInstrument[r.token] = r;
 }
 
 // -------------------- API endpoints --------------------
-
-// GET /api/angel/live?type=top25&exchange=NSE
 app.get("/api/angel/live", async (req, res) => {
   try {
     const { type = null } = req.query;
     const exchange = (req.query.exchange || "NSE").toUpperCase();
 
     if (type === "top25") {
-      // choose symbols based on exchange
       const symbols = exchange === "BSE" ? TOP25_BSE : TOP25_NSE;
+      try { await startSmartStream(exchange, symbols); } catch (e) { console.warn(e.message); }
 
-      // ensure stream started for this exchange and those symbols
-      try {
-        await startSmartStream(exchange, symbols);
-      } catch (e) {
-        console.warn("⚠️ startSmartStream warning:", e.message);
-        // still continue to return prepopulated list if possible
-      }
-
-      // Prepare response array of 25 objects in stable order (symbol keys)
       const response = symbols.map(sym => {
         const key = `${exchange}:${sym}`;
         const item = latestData.stocks[key];
-        // Always return an object with consistent fields
         return {
           symbol: sym,
           exch: exchange,
-          token: item ? item.token : (symbolKeyToToken ? symbolKeyToToken[`${exchange}:${sym}`] : null),
-          ltp: item ? item.ltp : 0,
-          change: item ? item.change : 0,
-          percentChange: item ? item.percentChange : 0
+          token: item ? item.token : symbolKeyToToken?.[key] || null,
+          ltp: item?.ltp || 0,
+          change: item?.change || 0,
+          percentChange: item?.percentChange || 0
         };
       });
 
@@ -376,7 +288,6 @@ app.get("/api/angel/live", async (req, res) => {
       return res.status(200).json({ type: "top25", exchange, data: response, indices: latestData.indices });
     }
 
-    // default: return latest snapshot
     return res.status(200).json({ indices: latestData.indices, stocks: latestData.stocks });
   } catch (err) {
     console.error("💥 /api/angel/live GET error:", err.message || err);
@@ -384,7 +295,6 @@ app.get("/api/angel/live", async (req, res) => {
   }
 });
 
-// POST /api/angel/live?exchange=NSE  -> explicit start
 app.post("/api/angel/live", async (req, res) => {
   try {
     const exchange = (req.query.exchange || "NSE").toUpperCase();
