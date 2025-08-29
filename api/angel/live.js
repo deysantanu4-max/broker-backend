@@ -4,6 +4,8 @@ import crypto from "crypto";
 import https from "https";
 import WebSocket from "ws";
 import EventEmitter from "events";
+import fs from "fs";
+import path from "path";
 
 const tickStore = {}; // { token: { symbol, ltp, change, percentChange, exch } }
 const tickEmitter = new EventEmitter();
@@ -11,6 +13,7 @@ const tickEmitter = new EventEmitter();
 // Cache login state
 let cachedLogin = null; // { feedToken, jwtToken, expiry }
 let ws = null;
+let tokenMap = {}; // { "26009": "RELIANCE", "11536": "TCS", ... }
 
 // =========================
 // Base32 decode + TOTP
@@ -41,6 +44,26 @@ function generateTOTP(secret) {
   const offset = hmac[hmac.length - 1] & 0xf;
   const otp = (hmac.readUInt32BE(offset) & 0x7fffffff) % 1000000;
   return otp.toString().padStart(6, "0");
+}
+
+// =========================
+// Load Token Map from ScripMaster
+// =========================
+async function loadTokenMap() {
+  try {
+    const scripMasterPath = path.join(process.cwd(), "api", "angel", "OpenAPIScripMaster.json");
+    const rawData = fs.readFileSync(scripMasterPath, "utf8");
+    const scripMaster = JSON.parse(rawData);
+
+    for (const inst of scripMaster) {
+      if (inst.exch_seg === "NSE" && inst.instrumenttype === "EQ") {
+        tokenMap[inst.token] = inst.symbol.replace("-EQ", "");
+      }
+    }
+    console.log("✅ Token map loaded:", Object.keys(tokenMap).length, "entries");
+  } catch (err) {
+    console.error("❌ Failed to load token map:", err.message);
+  }
 }
 
 // =========================
@@ -127,7 +150,7 @@ function startSmartStream(clientCode, feedToken, apiKey, tokensToSubscribe) {
       const data = JSON.parse(msg.toString());
       if (data?.ltp && data?.token) {
         tickStore[data.token] = {
-          symbol: data.token,
+          symbol: tokenMap[data.token] || data.token,
           ltp: data.ltp,
           change: data.netChange ?? 0,
           percentChange: data.percentChange ?? 0,
@@ -157,7 +180,9 @@ function startSmartStream(clientCode, feedToken, apiKey, tokensToSubscribe) {
 // Helpers
 // =========================
 function getTop25() {
-  return Object.values(tickStore).sort((a, b) => Math.abs(b.percentChange) - Math.abs(a.percentChange)).slice(0, 25);
+  return Object.values(tickStore)
+    .sort((a, b) => Math.abs(b.percentChange) - Math.abs(a.percentChange))
+    .slice(0, 25);
 }
 const getGainers = () => Object.values(tickStore).filter((s) => s.percentChange > 0);
 const getLosers = () => Object.values(tickStore).filter((s) => s.percentChange < 0);
@@ -185,15 +210,37 @@ export default async function handler(req, res) {
   try {
     const apiKey = process.env.ANGEL_API_KEY;
     const clientId = process.env.ANGEL_CLIENT_ID;
-    const tokensToSubscribe = ["26009"]; // example
+
+    // Load token map if not already done
+    if (Object.keys(tokenMap).length === 0) {
+      await loadTokenMap();
+    }
+
+    // Define Top25 NSE list
+    const top25Symbols = [
+      "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK",
+      "SBIN", "HINDUNILVR", "KOTAKBANK", "LT", "BHARTIARTL",
+      "AXISBANK", "BAJFINANCE", "ITC", "WIPRO", "ASIANPAINT",
+      "ULTRACEMCO", "MARUTI", "SUNPHARMA", "HCLTECH", "POWERGRID",
+      "TITAN", "NTPC", "ONGC", "JSWSTEEL", "ADANIPORTS"
+    ];
+
+    // Convert to tokens
+    const tokensToSubscribe = top25Symbols
+      .map(sym => Object.keys(tokenMap).find(t => tokenMap[t] === sym))
+      .filter(Boolean);
+
+    if (tokensToSubscribe.length === 0) {
+      throw new Error("No tokens resolved for Top25 symbols");
+    }
 
     const session = await loginOnce();
     startSmartStream(clientId, session.feedToken, apiKey, tokensToSubscribe);
 
     return res.status(200).json({
       message: "✅ Streaming active",
-      clientCode: clientId,
-      feedToken: session.feedToken
+      subscribed: tokensToSubscribe.length,
+      tokens: tokensToSubscribe
     });
   } catch (err) {
     console.error("💥 Live API error:", err.message);
