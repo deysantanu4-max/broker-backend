@@ -15,9 +15,12 @@ const tickEmitter = new EventEmitter();
 let ws = null;
 let cachedLogin = null; // { feedToken, jwtToken, expiry }
 
-// Scrip master mappings
+// Keep raw scrip master array for fuzzy lookups
+let scripMaster = null;
+
+// Scrip master mappings (fast lookup)
 let tokenToSymbol = {}; // { "26009": { symbol: "RELIANCE", exch: "NSE" } }
-let symbolToToken = {}; // { "NSE:RELIANCE": "26009", "BSE:RELIANCE": "500325" }
+let symbolToToken = {}; // { "NSE:RELIANCE": "26009", ... }
 
 // Last subscription payload (grouped)
 let lastTokenListGroups = [];
@@ -43,10 +46,6 @@ const TOP25_BSE = [
 
 // -----------------------------
 // Exchange type constants
-// Angel SmartAPI common mapping for subscriptions:
-// 1 = NSE (indices) (keep for indices streaming if used elsewhere)
-// 2 = NSE equities
-// 3 = BSE equities
 // -----------------------------
 const EXCH_TYPE = { INDICES: 1, NSE_EQ: 2, BSE_EQ: 3 };
 const exchToEquityType = { NSE: EXCH_TYPE.NSE_EQ, BSE: EXCH_TYPE.BSE_EQ };
@@ -134,10 +133,10 @@ async function loginOnce() {
 }
 
 // -----------------------------
-// Load ScripMaster → build maps
+// Load ScripMaster → build maps + keep raw array
 // -----------------------------
 async function loadScripMaster() {
-  if (Object.keys(tokenToSymbol).length > 0 && Object.keys(symbolToToken).length > 0) return;
+  if (scripMaster && Object.keys(tokenToSymbol).length > 0) return;
 
   const localPath = path.join(process.cwd(), "api", "angel", "OpenAPIScripMaster.json");
   let data = null;
@@ -156,6 +155,7 @@ async function loadScripMaster() {
     console.log(`📥 Loaded ScripMaster from CDN: ${data.length} instruments`);
   }
 
+  scripMaster = data;
   tokenToSymbol = {};
   symbolToToken = {};
 
@@ -164,6 +164,7 @@ async function loadScripMaster() {
     const instType = (inst.instrumenttype || inst.instrumentType || "").toUpperCase();
     const token = inst.token ? String(inst.token) : null;
     const rawSymbol = (inst.symbol || inst.tradingsymbol || "").toUpperCase();
+    const name = (inst.name || "").toUpperCase();
 
     if (!token || !rawSymbol) continue;
     if (!(exch === "NSE" || exch === "BSE")) continue; // only NSE/BSE
@@ -173,9 +174,86 @@ async function loadScripMaster() {
     tokenToSymbol[token] = { symbol: cleanSymbol, exch };
     const key = `${exch}:${cleanSymbol}`;
     if (!symbolToToken[key]) symbolToToken[key] = token;
+
+    // also save alternate key with -EQ (some callers use that)
+    const altKey = `${exch}:${rawSymbol}`;
+    if (!symbolToToken[altKey]) symbolToToken[altKey] = token;
+
+    // store name based mapping (first occurrence)
+    const nameKey = `${exch}:NAME:${name}`;
+    if (!symbolToToken[nameKey]) symbolToToken[nameKey] = token;
   }
 
   console.log(`✅ Built token maps: ${Object.keys(tokenToSymbol).length} tokens (NSE+BSE EQ)`);
+}
+
+// -----------------------------
+// Robust resolver for a single symbol -> token (fuzzy, mirrors historical.js logic)
+// Returns token string or null
+// -----------------------------
+function resolveTokenForSymbol(exchange, symbol) {
+  if (!scripMaster || scripMaster.length === 0) {
+    console.warn("⚠️ ScripMaster not loaded yet in resolveTokenForSymbol");
+    return null;
+  }
+  const exch = exchange.toUpperCase();
+  const sym = symbol.toUpperCase();
+
+  // 1) direct key
+  const directKeys = [
+    `${exch}:${sym}`,
+    `${exch}:${sym}-EQ`,
+    `${exch}:${sym.replace(/\s+/g, "")}`, // no spaces
+    `${exch}:${sym.replace(/\./g, "")}`
+  ];
+  for (const k of directKeys) {
+    if (symbolToToken[k]) {
+      console.log(`🔍 Resolved ${symbol} via direct key ${k} -> ${symbolToToken[k]}`);
+      return symbolToToken[k];
+    }
+  }
+
+  // 2) search by exact symbol/trading symbol entries in scripMaster
+  const exact = scripMaster.find(inst => {
+    const instExch = (inst.exch_seg || inst.exchSeg || "").toUpperCase();
+    if (instExch !== exch) return false;
+    const s = (inst.symbol || inst.tradingsymbol || "").toUpperCase();
+    if (!s) return false;
+    return s === sym || s === `${sym}-EQ`;
+  });
+  if (exact && exact.token) {
+    console.log(`🔍 Resolved ${symbol} by exact tradingsymbol -> ${exact.token}`);
+    return String(exact.token);
+  }
+
+  // 3) fallback: find first where name includes symbol (useful for different naming)
+  const byName = scripMaster.find(inst => {
+    const instExch = (inst.exch_seg || inst.exchSeg || "").toUpperCase();
+    if (instExch !== exch) return false;
+    const name = (inst.name || "").toUpperCase();
+    if (!name) return false;
+    return name.includes(sym);
+  });
+  if (byName && byName.token) {
+    console.log(`🔍 Resolved ${symbol} by name match (${byName.name || byName.symbol}) -> ${byName.token}`);
+    return String(byName.token);
+  }
+
+  // 4) more aggressive: symbol is substring of trading symbol
+  const substr = scripMaster.find(inst => {
+    const instExch = (inst.exch_seg || inst.exchSeg || "").toUpperCase();
+    if (instExch !== exch) return false;
+    const s = (inst.symbol || inst.tradingsymbol || "").toUpperCase();
+    if (!s) return false;
+    return s.includes(sym) || sym.includes(s);
+  });
+  if (substr && substr.token) {
+    console.log(`🔍 Resolved ${symbol} by substring match (${substr.symbol}) -> ${substr.token}`);
+    return String(substr.token);
+  }
+
+  console.warn(`❌ Could not resolve token for ${exch}:${symbol}`);
+  return null;
 }
 
 // -----------------------------
@@ -184,7 +262,6 @@ async function loadScripMaster() {
 function tryDecodeBinaryTick(buffer) {
   try {
     if (!Buffer.isBuffer(buffer) || buffer.length < 9) return null;
-    // Many SmartAPI binary packets have token at byte 1 (Int32BE) and price at 5 (Int32BE).
     const token = String(buffer.readInt32BE(1));
     const rawPrice = buffer.readInt32BE(5);
     const ltp = rawPrice / 100.0;
@@ -205,22 +282,34 @@ function chunkArray(arr, size) {
 
 // -----------------------------
 // Build grouped tokenList for subscribe (grouped by exchangeType), with batching
-// - returns array of groups where each group is { exchangeType, tokens: [...] }
+// Uses resolveTokenForSymbol to handle fuzzy mapping
 // -----------------------------
 function buildGroupedTokenListForExchange(exchange = "NSE") {
   const symbols = exchange === "BSE" ? TOP25_BSE : TOP25_NSE;
   const groups = {}; // exchangeType -> Set(tokens)
+  const missing = [];
 
   for (const sym of symbols) {
     const key = `${exchange}:${sym}`;
-    const token = symbolToToken[key];
+    let token = symbolToToken[key];
+
     if (!token) {
-      console.warn(`⚠️ No token found for ${key}`);
+      // attempt to resolve fuzzily
+      token = resolveTokenForSymbol(exchange, sym);
+    }
+
+    if (!token) {
+      missing.push({ symbol: sym, key });
       continue;
     }
+
     const exchangeType = exchToEquityType[exchange] || EXCH_TYPE.NSE_EQ;
     if (!groups[exchangeType]) groups[exchangeType] = new Set();
     groups[exchangeType].add(token);
+  }
+
+  if (missing.length) {
+    console.warn("⚠️ Missing token mappings for Top25 (will attempt further lookups):", JSON.stringify(missing, null, 2));
   }
 
   // Convert sets to array of { exchangeType, tokens: [...] }
@@ -229,25 +318,22 @@ function buildGroupedTokenListForExchange(exchange = "NSE") {
     tokens: Array.from(set)
   }));
 
+  console.log(`🔎 Built grouped token list for ${exchange}: ${grouped.map(g => ({ exchangeType: g.exchangeType, tokenCount: g.tokens.length }))}`);
   return grouped;
 }
 
 // -----------------------------
-// Build subscription batches for WS from grouped lists
-// returns an array of tokenListGroup objects each with one { exchangeType, tokens: [...] }
-// but token arrays chunked to size batchSize
+// Build subscription batches for WS (chunk each group's tokens)
 // -----------------------------
 function buildSubscriptionBatches(groupedList, batchSize = 500) {
-  // groupedList: [{ exchangeType, tokens: [...] }, ...]
   const batches = [];
   for (const grp of groupedList) {
     const chunks = chunkArray(grp.tokens, batchSize);
     for (const chunk of chunks) {
+      // tokenList is an array that may have multiple grouped entries; we send one grouped entry per batch here
       batches.push([{ exchangeType: grp.exchangeType, tokens: chunk }]);
     }
   }
-  // Each batch is an array with a single entry tokenList (Angel accepts tokenList array)
-  // We'll send subscribe with params.tokenList = batch (an array with grouped entry/entries)
   return batches;
 }
 
@@ -261,7 +347,6 @@ function startSmartStream(clientCode, feedToken, apiKey, groupedTokenList) {
     return;
   }
 
-  // store last groups
   lastTokenListGroups = groupedTokenList || lastTokenListGroups || [];
 
   const wsUrl = `wss://smartapisocket.angelone.in/smart-stream?clientCode=${clientCode}&feedToken=${feedToken}&apiKey=${apiKey}`;
@@ -270,37 +355,38 @@ function startSmartStream(clientCode, feedToken, apiKey, groupedTokenList) {
   ws.on("open", () => {
     console.log("✅ Connected to SmartAPI stream");
 
-    // Build batched subscribe payloads
     const batches = buildSubscriptionBatches(lastTokenListGroups, 500);
     if (batches.length === 0) {
       console.warn("⚠️ No token groups to subscribe.");
       return;
     }
 
-    // Send each batch as separate subscribe (keeps payload sizes safe)
+    // Diagnostic: log first batch (short sample) for verification
+    try {
+      console.log("📡 About to subscribe batches. sample first batch:", JSON.stringify(batches[0][0].tokens.slice(0, 20)));
+    } catch (e) { /* ignore */ }
+
     batches.forEach((tokenListArray, idx) => {
       const subscribeMessage = {
         action: 1,
         params: {
           mode: 1,
-          tokenList: tokenListArray // note: tokenListArray is an array with grouped entries
+          tokenList: tokenListArray
         }
       };
       try {
         ws.send(JSON.stringify(subscribeMessage));
-        console.log(`📡 Subscribed batch ${idx + 1}/${batches.length}:`, JSON.stringify(tokenListArray));
+        console.log(`📡 Subscribed batch ${idx + 1}/${batches.length}: exchangeType=${tokenListArray[0].exchangeType} tokens=${tokenListArray[0].tokens.length}`);
       } catch (e) {
         console.error("💥 Failed to send subscribe message:", e.message);
       }
     });
   });
 
-  // avoid log spam for non-JSON previews
   let nonJsonPreviewCount = 0;
 
   ws.on("message", (msg) => {
     try {
-      // Try JSON parse first (indices likely send JSON)
       let parsed = null;
       const txt = typeof msg.toString === "function" ? msg.toString() : "";
 
@@ -365,7 +451,6 @@ function startSmartStream(clientCode, feedToken, apiKey, groupedTokenList) {
         return;
       }
 
-      // Preview first few undecodable messages for debugging
       if (nonJsonPreviewCount < 3) {
         nonJsonPreviewCount++;
         const preview = buf.slice ? buf.slice(0, 120).toString("hex") : String(msg).slice(0, 120);
