@@ -1,160 +1,122 @@
 // api/angel/live.js
-import { WebSocket } from "ws";
-import fetch from "node-fetch";
+import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
+import { createRequire } from "module";
+import express from "express";
+import AngelOne from "angel-one"; // adjust if using a custom SDK
 
-// Import ScripMaster directly (make sure it's in project root, not /public)
-import scripMaster from "../../ScripMaster.json" assert { type: "json" };
+const require = createRequire(import.meta.url);
 
-let stream = null;
-let feedToken = null;
-let tokenMaps = { NSE: {}, BSE: {} };
-let groupedTokens = { NSE: [], BSE: [] };
+// Load ScripMaster.json safely without "assert"
+const scripMaster = require("../../ScripMaster.json");
 
-// ---- Load & Build Token Maps ----
-function buildTokenMaps() {
-  console.log(`📥 Loaded ScripMaster locally: ${scripMaster.length} instruments`);
+const router = express.Router();
 
-  tokenMaps = { NSE: {}, BSE: {} };
-  groupedTokens = { NSE: [], BSE: [] };
+// Cache
+let feedTokenCache = null;
+let feedTokenExpiry = null;
+let instrumentMap = null; // token → details
+let symbolMap = null;     // symbol → token
 
-  for (const item of scripMaster) {
-    const exch = item.exch?.toUpperCase();
-    if (!["NSE", "BSE"].includes(exch)) continue;
+// --- Helpers ---
+const loadScripMaster = () => {
+  if (!instrumentMap) {
+    console.log("📥 Loading ScripMaster...");
+    instrumentMap = {};
+    symbolMap = {};
 
-    const symbol = item.symbol?.toUpperCase();
-    const token = item.token;
+    for (const item of scripMaster) {
+      const token = String(item.token);
+      const symbol = item.symbol?.toUpperCase();
 
-    if (symbol && token) {
-      tokenMaps[exch][symbol] = token;
-    }
-  }
-
-  console.log(
-    `✅ Built token maps: ${Object.keys(tokenMaps.NSE).length} (NSE EQ), ${Object.keys(
-      tokenMaps.BSE
-    ).length} (BSE EQ)`
-  );
-}
-
-// ---- AngelOne login ----
-async function loginAngel() {
-  console.log("🔑 Logging in to AngelOne…");
-  const res = await fetch("https://apiconnect.angelbroking.com/rest/auth/angelbroking/jwt/v1/generateToken", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      "X-ClientLocalIP": "127.0.0.1",
-      "X-ClientPublicIP": "127.0.0.1",
-      "X-MACAddress": "xx:xx:xx:xx:xx:xx",
-      "X-PrivateKey": process.env.ANGEL_API_KEY,
-    },
-    body: JSON.stringify({
-      clientcode: process.env.ANGEL_CLIENT_CODE,
-      password: process.env.ANGEL_PASSWORD,
-      totp: process.env.ANGEL_TOTP,
-    }),
-  });
-
-  const data = await res.json();
-  feedToken = data?.data?.feedToken;
-  console.log(`✅ Logged in, feedToken cached until ${new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString()}`);
-  return feedToken;
-}
-
-// ---- Subscription builder ----
-function buildSubscription(type, exchange) {
-  if (type === "indices") {
-    // Keep your existing indices subscription untouched
-    return [
-      { exch: "NSE", token: "999920000" }, // Nifty 50
-      { exch: "NSE", token: "999920005" }, // BankNifty
-      { exch: "NSE", token: "999920019" }, // FINNIFTY
-    ];
-  }
-
-  if (type === "top25") {
-    const top25NSE = [
-      "RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","HINDUNILVR","KOTAKBANK","LT","BHARTIARTL",
-      "AXISBANK","BAJFINANCE","ITC","WIPRO","ASIANPAINT","ULTRACEMCO","MARUTI","SUNPHARMA","HCLTECH","POWERGRID",
-      "TITAN","NTPC","ONGC","JSWSTEEL","ADANIPORTS"
-    ];
-
-    const top25BSE = [
-      "RELIANCE","HDFCBANK","INFY","ICICIBANK","SBIN","TCS","KOTAKBANK","HINDUNILVR","BHARTIARTL","BAJFINANCE",
-      "ITC","AXISBANK","LT","WIPRO","ASIANPAINT","ULTRACEMCO","MARUTI","SUNPHARMA","HCLTECH","POWERGRID",
-      "TITAN","NTPC","ONGC","JSWSTEEL","ADANIPORTS"
-    ];
-
-    const list = exchange === "BSE" ? top25BSE : top25NSE;
-
-    const subs = [];
-    for (const sym of list) {
-      const token = tokenMaps[exchange]?.[sym];
-      if (token) {
-        subs.push({ exch: exchange, token });
-      } else {
-        console.log(`⚠️ No token found for ${exchange}:${sym}`);
+      if (token && symbol) {
+        instrumentMap[token] = item;
+        symbolMap[symbol] = token;
       }
     }
 
-    console.log(`🔎 Built grouped token list for ${exchange}: ${subs.length} symbols`);
-    return subs;
+    console.log(`✅ Built token maps: ${Object.keys(instrumentMap).length} tokens`);
+  }
+};
+
+const getFeedToken = async () => {
+  const now = Date.now();
+  if (feedTokenCache && feedTokenExpiry && now < feedTokenExpiry) {
+    return feedTokenCache;
   }
 
-  return [];
-}
+  console.log("🔑 Logging in to AngelOne…");
+  const client = new AngelOne({
+    apiKey: process.env.ANGEL_API_KEY,
+    clientCode: process.env.ANGEL_CLIENT_CODE,
+    password: process.env.ANGEL_PASSWORD,
+    totpSecret: process.env.ANGEL_TOTP_SECRET,
+  });
 
-// ---- Handler ----
-export default async function handler(req, res) {
-  const { type = "indices", exchange = "NSE" } = req.query;
-  console.log(`📩 /api/angel/live hit GET /api/angel/live?type=${type}&exchange=${exchange}`);
+  const session = await client.generateSession();
+  feedTokenCache = session.feedToken;
+  feedTokenExpiry = now + 1000 * 60 * 60 * 12; // 12h cache
 
-  if (!feedToken) {
-    buildTokenMaps();
-    await loginAngel();
+  console.log(`✅ Logged in, feedToken cached until ${new Date(feedTokenExpiry).toISOString()}`);
+  return feedTokenCache;
+};
+
+// --- API Handler ---
+router.get("/", async (req, res) => {
+  try {
+    console.log("📩 /api/angel/live hit");
+
+    const { type = "indices", exchange = "NSE" } = req.query;
+
+    // Ensure scrip master loaded
+    loadScripMaster();
+
+    // Build symbol list
+    let symbols = [];
+    if (type === "indices") {
+      symbols = ["NIFTY 50", "NIFTY BANK"];
+    } else if (type === "top25") {
+      symbols =
+        exchange === "BSE"
+          ? [
+              "RELIANCE", "HDFCBANK", "INFY", "ICICIBANK", "SBIN",
+              "TCS", "KOTAKBANK", "HINDUNILVR", "BHARTIARTL", "BAJFINANCE",
+              "ITC", "AXISBANK", "LT", "WIPRO", "ASIANPAINT",
+              "ULTRACEMCO", "MARUTI", "SUNPHARMA", "HCLTECH", "POWERGRID",
+              "TITAN", "NTPC", "ONGC", "JSWSTEEL", "ADANIPORTS"
+            ]
+          : [
+              "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK",
+              "SBIN", "HINDUNILVR", "KOTAKBANK", "LT", "BHARTIARTL",
+              "AXISBANK", "BAJFINANCE", "ITC", "WIPRO", "ASIANPAINT",
+              "ULTRACEMCO", "MARUTI", "SUNPHARMA", "HCLTECH", "POWERGRID",
+              "TITAN", "NTPC", "ONGC", "JSWSTEEL", "ADANIPORTS"
+            ];
+    }
+
+    // Map symbols → tokens
+    const instruments = [];
+    for (const sym of symbols) {
+      const token = symbolMap[sym.toUpperCase()];
+      if (token) {
+        instruments.push({ symbol: sym, token });
+      } else {
+        console.log(`⚠️ Symbol not found in scripMaster: ${sym}`);
+      }
+    }
+
+    console.log(`🔎 Built token list for ${exchange}: ${JSON.stringify(instruments)}`);
+
+    // Ensure feed token ready
+    await getFeedToken();
+
+    // Respond with instruments list (later your websocket uses these tokens)
+    res.json(instruments);
+  } catch (err) {
+    console.error("❌ Error in /api/angel/live:", err);
+    res.status(500).json({ error: err.message });
   }
+});
 
-  const subs = buildSubscription(type, exchange.toUpperCase());
-
-  if (!subs.length) {
-    console.log(`🟢 GET ${type} (${exchange}) -> 0 items`);
-    return res.status(200).json([]);
-  }
-
-  // Lazy stream init
-  if (!stream) {
-    console.log(`⏯️ Stream not active — starting (lazy) for ${exchange}`);
-    stream = new WebSocket("wss://smartapisocket.angelone.in/smart-stream");
-
-    stream.on("open", () => {
-      console.log("🟢 WebSocket connected, sending subscription");
-      const payload = {
-        correlationID: "top25-sub",
-        action: 1,
-        params: {
-          mode: 1,
-          tokenList: subs,
-        },
-      };
-      stream.send(JSON.stringify(payload));
-    });
-
-    stream.on("message", (msg) => {
-      console.log("📊 Tick:", msg.toString());
-    });
-
-    stream.on("error", (err) => {
-      console.error("❌ Stream error:", err);
-    });
-
-    stream.on("close", () => {
-      console.log("🔴 WebSocket closed");
-      stream = null;
-    });
-  }
-
-  console.log(`🟢 GET ${type} (${exchange}) -> ${subs.length} items`);
-  res.status(200).json(subs);
-}
+export default router;
